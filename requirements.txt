@@ -1,0 +1,16 @@
+python-binance==1.0.19
+pandas==2.0.3
+numpy==1.24.3
+python-telegram-bot==20.7
+python-dotenv==1.0.0
+loguru==0.7.2
+schedule==1.2.1
+requests==2.31.0
+discord.py==2.3.2
+pandas_ta==0.3.14b0
+aiohttp==3.8.5
+asyncio==3.4.3
+streamlit==1.28.0
+streamlit-autorefresh==1.0.1
+fastapi==0.110.0
+uvicorn==0.29.0
