@@ -1,10 +1,21 @@
 {
   "TRADING_PAIRS": [
-    "ETHUSDT",
     "BTCUSDT",
-    "BNBUSDT"
+    "ETHUSDT",
+    "BNBUSDT",
+    "SOLUSDT",
+    "XRPUSDT",
+    "ADAUSDT",
+    "DOGEUSDT",
+    "AVAXUSDT",
+    "DOTUSDT",
+    "LTCUSDT",
+    "LINKUSDT",
+    "BCHUSDT",
+    "NEARUSDT",
+    "ICPUSDT"
   ],
-  "LEVERAGE": 3,
+  "LEVERAGE": 25,
   "TRAILING_STOP_PERCENTAGE": 1.0,
   "TAKE_PROFIT_PERCENTAGE": 2.0,
   "MIN_NOTIONAL": 20.0,

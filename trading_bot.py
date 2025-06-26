@@ -20,6 +20,7 @@ class TradingBot:
         self.setup_logging()
         self.last_heartbeat = time.time()
         self.account_balance = None
+        self.last_rsi = {}
 
     def setup_logging(self):
         logger.add(
@@ -143,11 +144,11 @@ class TradingBot:
             df = self.calculate_indicators(df)
             current_rsi = df['rsi'].iloc[-1]
             logger.info(f"Monitoring {symbol} - Price: {current_price}, RSI: {current_rsi:.2f}")
-            # await self.send_technical_indicators(symbol, current_price, current_rsi)
+            prev_rsi = self.last_rsi.get(symbol, current_rsi)
+            self.last_rsi[symbol] = current_rsi
             if symbol in self.active_trades:
-                await self.check_trailing_stop(symbol)
                 return
-            if current_rsi < 30:
+            if prev_rsi >= 45 and current_rsi < 45:
                 await self.update_account_balance()
                 if self.account_balance is None or self.account_balance <= 0:
                     logger.warning(f"Cannot open new position for {symbol}: Insufficient balance")
@@ -157,7 +158,7 @@ class TradingBot:
                     logger.warning(f"Cannot open new position for {symbol}: Invalid position size")
                     return
                 await self.place_order(symbol, SIDE_BUY, quantity)
-            elif current_rsi > 70:
+            elif prev_rsi <= 55 and current_rsi > 55:
                 await self.update_account_balance()
                 if self.account_balance is None or self.account_balance <= 0:
                     logger.warning(f"Cannot open new position for {symbol}: Insufficient balance")
@@ -170,12 +171,6 @@ class TradingBot:
         except Exception as e:
             logger.error(f"Error checking market conditions for {symbol}: {str(e)}")
             await self.notification.notify(f"Error checking market conditions for {symbol}: {str(e)}")
-
-    def calculate_trailing_stop(self, entry_price, current_price, position_side):
-        if position_side == "LONG":
-            return current_price * (1 - config.TRAILING_STOP_PERCENTAGE / 100)
-        else:
-            return current_price * (1 + config.TRAILING_STOP_PERCENTAGE / 100)
 
     async def verify_api_connection(self):
         try:
@@ -255,6 +250,19 @@ class TradingBot:
                     "Please check that your API key has futures trading enabled."
                 ))
 
+    def format_quantity(self, quantity, step_size):
+        """Format quantity according to Binance precision requirements"""
+        # Calculate precision from step_size
+        precision = 0
+        if step_size < 1:
+            precision = len(str(step_size).split('.')[-1].rstrip('0'))
+        
+        # Round to the correct precision
+        if precision == 0:
+            return int(quantity)
+        else:
+            return round(quantity, precision)
+
     async def calculate_position_size(self, symbol, current_price):
         try:
             await self.update_account_balance()
@@ -266,29 +274,88 @@ class TradingBot:
             if available_balance <= 0:
                 logger.warning(f"Insufficient available balance: {available_balance} USDT")
                 return None
-            max_position_value = (available_balance * config.POSITION_SIZE_BUFFER) * config.LEVERAGE
-            quantity = max_position_value / current_price
+            
+            # Get symbol info for margin requirements
             symbol_info = await self.safe_api_call(self.client.futures_exchange_info)
             symbol_filters = next(filter(lambda x: x['symbol'] == symbol, symbol_info['symbols']))
             lot_size_filter = next(filter(lambda x: x['filterType'] == 'LOT_SIZE', symbol_filters['filters']))
             step_size = float(lot_size_filter['stepSize'])
+            
+            # Get margin requirements (usually 1/leverage for isolated margin)
+            current_leverage = config.LEVERAGE
+            margin_requirement = 1.0 / current_leverage  # 1/leverage for isolated margin
+            
+            if available_balance < config.MIN_BALANCE_THRESHOLD:
+                # เทหมดหน้าตักสำหรับบัญชีเล็ก
+                max_position_value = available_balance * current_leverage
+                quantity = max_position_value / current_price
+            else:
+                max_position_value = (available_balance * config.POSITION_SIZE_BUFFER) * current_leverage
+                quantity = max_position_value / current_price
+            
             min_notional = config.MIN_NOTIONAL
             min_quantity = min_notional / current_price
-            min_quantity = float(int(min_quantity / step_size + 1) * step_size)
-            if available_balance < config.MIN_BALANCE_THRESHOLD:
-                max_quantity = (available_balance * config.SMALL_ACCOUNT_POSITION_LIMIT) / current_price
-                quantity = min(quantity, max_quantity)
+            min_quantity = self.format_quantity(min_quantity, step_size)
             quantity = max(quantity, min_quantity)
-            quantity = float(int(quantity / step_size) * step_size)
+            quantity = self.format_quantity(quantity, step_size)
             notional_value = quantity * current_price
-            if notional_value < min_notional:
-                logger.warning(f"Calculated position size {quantity} for {symbol} results in notional value {notional_value} USDT, which is below minimum {min_notional} USDT")
-                return None
+            
+            # Calculate required margin
+            required_margin = notional_value * margin_requirement
+            logger.info(f"Position calculation for {symbol}: Notional={notional_value:.2f} USDT, Required Margin={required_margin:.2f} USDT, Available={available_balance:.2f} USDT")
+            
+            # ถ้า notional ไม่ถึงขั้นต่ำ หรือ margin ไม่พอ ให้ลองเพิ่ม leverage อัตโนมัติ
+            if notional_value < min_notional or required_margin > available_balance:
+                logger.info(f"Starting leverage loop for {symbol}: Notional={notional_value:.2f} < {min_notional} OR Required Margin={required_margin:.2f} > Available={available_balance:.2f}")
+                max_leverage = 125
+                found = False
+                for lev in range(int(current_leverage)+1, max_leverage+1):
+                    logger.info(f"Testing leverage {lev}x for {symbol}")
+                    margin_requirement = 1.0 / lev
+                    
+                    if available_balance < config.MIN_BALANCE_THRESHOLD:
+                        max_position_value = available_balance * lev
+                    else:
+                        max_position_value = (available_balance * config.POSITION_SIZE_BUFFER) * lev
+                    
+                    test_quantity = max_position_value / current_price
+                    test_quantity = max(test_quantity, min_quantity)
+                    test_quantity = self.format_quantity(test_quantity, step_size)
+                    test_notional = test_quantity * current_price
+                    test_required_margin = test_notional * margin_requirement
+                    
+                    logger.info(f"Leverage {lev}x: Notional={test_notional:.2f} USDT, Required Margin={test_required_margin:.2f} USDT")
+                    
+                    if test_notional >= min_notional and test_required_margin <= available_balance:
+                        # ตั้งค่า leverage ใหม่ผ่าน API
+                        try:
+                            await self.safe_api_call(self.client.futures_change_leverage, symbol=symbol, leverage=lev)
+                            logger.info(f"✅ Auto-increased leverage for {symbol} to {lev}x to meet requirements.")
+                            await self.notification.notify(f"🔄 Auto-increased leverage for {symbol} to {lev}x")
+                        except Exception as e:
+                            logger.error(f"Failed to set leverage: {e}")
+                            await self.notification.notify(f"Failed to set leverage: {e}")
+                            return None
+                        quantity = test_quantity
+                        notional_value = test_notional
+                        found = True
+                        break
+                
+                if not found:
+                    logger.warning(f"ทุนต่ำเกินไป แม้จะใช้ leverage 125x แล้วก็ยังไม่ถึง requirements")
+                    await self.notification.notify(
+                        f"❌ ทุนต่ำเกินไป แม้จะใช้ leverage 125x แล้วก็ยังไม่ถึง requirements\n"
+                        f"Notional: {notional_value:.2f} USDT (ขั้นต่ำ {min_notional} USDT)\n"
+                        f"Required Margin: {required_margin:.2f} USDT (Available: {available_balance:.2f} USDT)"
+                    )
+                    return None
+            
             min_buffer = min_notional + 5
             if notional_value < min_buffer:
                 logger.warning(f"Position size too small for {symbol}: {notional_value:.2f} USDT")
                 return None
-            logger.info(f"Calculated position size for {symbol}: {quantity} (Price: {current_price}, Notional: {notional_value:.2f} USDT)")
+            
+            logger.info(f"✅ Final position size for {symbol}: {quantity} (Price: {current_price}, Notional: {notional_value:.2f} USDT)")
             return quantity
         except Exception as e:
             logger.error(f"Error calculating position size: {str(e)}")
@@ -391,32 +458,6 @@ class TradingBot:
             logger.error(f"Failed to place order: {str(e)}")
             await self.notification.notify(f"Failed to place order: {str(e)}")
             return None
-
-    async def check_trailing_stop(self, symbol):
-        if symbol not in self.active_trades:
-            return
-        trade = self.active_trades[symbol]
-        ticker = await self.safe_api_call(self.client.futures_symbol_ticker, symbol=symbol)
-        current_price = float(ticker['price'])
-        new_trailing_stop = self.calculate_trailing_stop(
-            trade['entry_price'],
-            current_price,
-            trade['position_side']
-        )
-        if trade['position_side'] == "LONG" and new_trailing_stop > trade['trailing_stop']:
-            trade['trailing_stop'] = new_trailing_stop
-        elif trade['position_side'] == "SHORT" and new_trailing_stop < trade['trailing_stop']:
-            trade['trailing_stop'] = new_trailing_stop
-        if (trade['position_side'] == "LONG" and current_price <= trade['trailing_stop']) or \
-           (trade['position_side'] == "SHORT" and current_price >= trade['trailing_stop']):
-            self.log_trade_activity(
-                event="Trailing Stop Hit",
-                symbol=symbol,
-                side=trade['position_side'],
-                price=current_price,
-                reason="Trailing Stop"
-            )
-            await self.close_position(symbol)
 
     async def close_position(self, symbol):
         try:
