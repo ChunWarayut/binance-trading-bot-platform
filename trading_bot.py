@@ -143,12 +143,24 @@ class TradingBot:
                 df[col] = df[col].astype(float)
             df = self.calculate_indicators(df)
             current_rsi = df['rsi'].iloc[-1]
-            logger.info(f"Monitoring {symbol} - Price: {current_price}, RSI: {current_rsi:.2f}")
             prev_rsi = self.last_rsi.get(symbol, current_rsi)
+            
+            # เพิ่มการเช็ค trend direction
+            sma20 = df['sma20'].iloc[-1]
+            sma50 = df['sma50'].iloc[-1]
+            trend_up = sma20 > sma50
+            
+            logger.info(f"Monitoring {symbol} - Price: {current_price}, RSI: {current_rsi:.2f}, Trend: {'UP' if trend_up else 'DOWN'}")
+            
             self.last_rsi[symbol] = current_rsi
             if symbol in self.active_trades:
                 return
-            if prev_rsi >= 45 and current_rsi < 45:
+            
+            # Logic ใหม่: RSI < 40 = oversold (ซื้อ), RSI > 60 = overbought (ขาย)
+            # และเช็ค trend direction เพื่อเพิ่มความแม่นยำ
+            if current_rsi < 40 and trend_up:
+                # RSI oversold + trend up = ซื้อ
+                logger.info(f"RSI oversold ({current_rsi:.2f}) + trend up = BUY signal for {symbol}")
                 await self.update_account_balance()
                 if self.account_balance is None or self.account_balance <= 0:
                     logger.warning(f"Cannot open new position for {symbol}: Insufficient balance")
@@ -158,7 +170,9 @@ class TradingBot:
                     logger.warning(f"Cannot open new position for {symbol}: Invalid position size")
                     return
                 await self.place_order(symbol, SIDE_BUY, quantity)
-            elif prev_rsi <= 55 and current_rsi > 55:
+            elif current_rsi > 60 and not trend_up:
+                # RSI overbought + trend down = ขาย
+                logger.info(f"RSI overbought ({current_rsi:.2f}) + trend down = SELL signal for {symbol}")
                 await self.update_account_balance()
                 if self.account_balance is None or self.account_balance <= 0:
                     logger.warning(f"Cannot open new position for {symbol}: Insufficient balance")
