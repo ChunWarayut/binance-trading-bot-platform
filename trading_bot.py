@@ -119,10 +119,136 @@ class TradingBot:
         df['macd_signal'] = macd['MACDs_14_30_12']
         df['macd_hist'] = macd['MACDh_14_30_12']
         
+        # Calculate Bollinger Bands
+        bb = df.ta.bbands(length=20, std=2)
+        df['bb_upper'] = bb['BBU_20_2.0']
+        df['bb_middle'] = bb['BBM_20_2.0']
+        df['bb_lower'] = bb['BBL_20_2.0']
+        
+        # Calculate Stochastic Oscillator
+        stoch = df.ta.stoch(high='high', low='low', close='close', k=14, d=3)
+        df['stoch_k'] = stoch['STOCHk_14_3_3']
+        df['stoch_d'] = stoch['STOCHd_14_3_3']
+        
+        # Calculate Williams %R
+        df['williams_r'] = df.ta.willr(high='high', low='low', close='close', length=14)
+        
         # Calculate Volume SMA with longer period
         df['volume_sma20'] = df.ta.sma(length=35, close='volume')  # Changed from 30 to 35
         
+        # Ensure all indicator columns are numeric and handle NaN values
+        indicator_columns = ['sma20', 'sma50', 'rsi', 'macd', 'macd_signal', 'macd_hist', 
+                           'bb_upper', 'bb_middle', 'bb_lower', 'stoch_k', 'stoch_d', 
+                           'williams_r', 'volume_sma20']
+        
+        for col in indicator_columns:
+            if col in df.columns:
+                # Convert to numeric, coercing errors to NaN
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+                # Fill NaN values with 0 or appropriate default
+                if col in ['rsi', 'stoch_k', 'stoch_d', 'williams_r']:
+                    df[col] = df[col].fillna(50)  # Neutral values for oscillators
+                else:
+                    df[col] = df[col].fillna(0)
+        
         return df
+
+    def check_macd_trend_signal(self, df):
+        """Check MACD + Trend signal"""
+        try:
+            current_macd = float(df['macd'].iloc[-1])
+            current_signal = float(df['macd_signal'].iloc[-1])
+            prev_macd = float(df['macd'].iloc[-2])
+            prev_signal = float(df['macd_signal'].iloc[-2])
+            
+            # Trend direction
+            sma20 = float(df['sma20'].iloc[-1])
+            sma50 = float(df['sma50'].iloc[-1])
+            trend_up = sma20 > sma50
+            
+            # MACD bullish crossover
+            bullish_crossover = prev_macd <= prev_signal and current_macd > current_signal
+            # MACD bearish crossover
+            bearish_crossover = prev_macd >= prev_signal and current_macd < current_signal
+            
+            if bullish_crossover and trend_up:
+                return "BUY"
+            elif bearish_crossover and not trend_up:
+                return "SELL"
+            return None
+        except (ValueError, TypeError, IndexError) as e:
+            logger.warning(f"Error in MACD trend signal calculation: {e}")
+            return None
+
+    def check_bollinger_rsi_signal(self, df, current_price):
+        """Check Bollinger Bands + RSI signal"""
+        try:
+            current_rsi = float(df['rsi'].iloc[-1])
+            bb_upper = float(df['bb_upper'].iloc[-1])
+            bb_lower = float(df['bb_lower'].iloc[-1])
+            
+            # Price at Bollinger Bands
+            price_at_upper = current_price >= bb_upper
+            price_at_lower = current_price <= bb_lower
+            
+            # RSI conditions
+            rsi_oversold = current_rsi < 30
+            rsi_overbought = current_rsi > 70
+            
+            if price_at_lower and rsi_oversold:
+                return "BUY"
+            elif price_at_upper and rsi_overbought:
+                return "SELL"
+            return None
+        except (ValueError, TypeError, IndexError) as e:
+            logger.warning(f"Error in Bollinger RSI signal calculation: {e}")
+            return None
+
+    def check_stochastic_williams_signal(self, df):
+        """Check Stochastic + Williams %R signal"""
+        try:
+            current_stoch_k = float(df['stoch_k'].iloc[-1])
+            current_williams_r = float(df['williams_r'].iloc[-1])
+            
+            # Stochastic conditions
+            stoch_oversold = current_stoch_k < 20
+            stoch_overbought = current_stoch_k > 80
+            
+            # Williams %R conditions
+            williams_oversold = current_williams_r < -80
+            williams_overbought = current_williams_r > -20
+            
+            if stoch_oversold and williams_oversold:
+                return "BUY"
+            elif stoch_overbought and williams_overbought:
+                return "SELL"
+            return None
+        except (ValueError, TypeError, IndexError) as e:
+            logger.warning(f"Error in Stochastic Williams signal calculation: {e}")
+            return None
+
+    def check_momentum_signal(self, df):
+        """Check momentum signal for additional confirmation"""
+        try:
+            # Price momentum (current price vs previous)
+            current_price = float(df['close'].iloc[-1])
+            prev_price = float(df['close'].iloc[-2])
+            price_momentum = (current_price - prev_price) / prev_price * 100
+            
+            # Volume confirmation
+            current_volume = float(df['volume'].iloc[-1])
+            avg_volume = float(df['volume_sma20'].iloc[-1])
+            volume_spike = current_volume > avg_volume * 1.5
+            
+            # RSI momentum
+            current_rsi = float(df['rsi'].iloc[-1])
+            prev_rsi = float(df['rsi'].iloc[-2])
+            rsi_momentum = current_rsi - prev_rsi
+            
+            return price_momentum, volume_spike, rsi_momentum
+        except (ValueError, TypeError, IndexError) as e:
+            logger.warning(f"Error in momentum signal calculation: {e}")
+            return 0.0, False, 0.0
 
     async def check_market_conditions(self, symbol):
         try:
@@ -141,26 +267,52 @@ class TradingBot:
             ])
             for col in ['open', 'high', 'low', 'close']:
                 df[col] = df[col].astype(float)
+            # Also convert volume to numeric
+            df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0)
             df = self.calculate_indicators(df)
-            current_rsi = df['rsi'].iloc[-1]
-            prev_rsi = self.last_rsi.get(symbol, current_rsi)
             
-            # เพิ่มการเช็ค trend direction
-            sma20 = df['sma20'].iloc[-1]
-            sma50 = df['sma50'].iloc[-1]
-            trend_up = sma20 > sma50
+            # Get all signals from 3 strategies
+            macd_signal = self.check_macd_trend_signal(df)
+            bb_rsi_signal = self.check_bollinger_rsi_signal(df, current_price)
+            stoch_williams_signal = self.check_stochastic_williams_signal(df)
             
-            logger.info(f"Monitoring {symbol} - Price: {current_price}, RSI: {current_rsi:.2f}, Trend: {'UP' if trend_up else 'DOWN'}")
+            # Get momentum signals
+            price_momentum, volume_spike, rsi_momentum = self.check_momentum_signal(df)
             
-            self.last_rsi[symbol] = current_rsi
+            # Log all indicators
+            try:
+                current_rsi = float(df['rsi'].iloc[-1])
+                current_macd = float(df['macd'].iloc[-1])
+                current_stoch_k = float(df['stoch_k'].iloc[-1])
+                current_williams_r = float(df['williams_r'].iloc[-1])
+                bb_upper = float(df['bb_upper'].iloc[-1])
+                bb_lower = float(df['bb_lower'].iloc[-1])
+                
+                logger.info(f"Monitoring {symbol} - Price: {current_price}")
+                logger.info(f"Indicators: RSI={current_rsi:.2f}, MACD={current_macd:.4f}, StochK={current_stoch_k:.2f}, WilliamsR={current_williams_r:.2f}")
+                logger.info(f"Bollinger: Upper={bb_upper:.2f}, Lower={bb_lower:.2f}")
+                logger.info(f"Signals: MACD={macd_signal}, BB+RSI={bb_rsi_signal}, Stoch+Williams={stoch_williams_signal}")
+                logger.info(f"Momentum: Price={price_momentum:.2f}%, Volume Spike={volume_spike}, RSI Momentum={rsi_momentum:.2f}")
+                
+                self.last_rsi[symbol] = current_rsi
+            except (ValueError, TypeError, IndexError) as e:
+                logger.warning(f"Error logging indicators for {symbol}: {e}")
+                self.last_rsi[symbol] = 50.0  # Default neutral RSI value
             if symbol in self.active_trades:
                 return
             
-            # Logic ใหม่: RSI < 40 = oversold (ซื้อ), RSI > 60 = overbought (ขาย)
-            # และเช็ค trend direction เพื่อเพิ่มความแม่นยำ
-            if current_rsi < 40 and trend_up:
-                # RSI oversold + trend up = ซื้อ
-                logger.info(f"RSI oversold ({current_rsi:.2f}) + trend up = BUY signal for {symbol}")
+            # Count signals
+            buy_signals = sum([1 for signal in [macd_signal, bb_rsi_signal, stoch_williams_signal] if signal == "BUY"])
+            sell_signals = sum([1 for signal in [macd_signal, bb_rsi_signal, stoch_williams_signal] if signal == "SELL"])
+            
+            # Decision logic: Need at least 2 out of 3 signals to agree
+            # หรือ momentum strong แม้ไม่มี technical signal
+            strong_buy_momentum = price_momentum > 1.0 and volume_spike and rsi_momentum > 5
+            strong_sell_momentum = price_momentum < -1.0 and volume_spike and rsi_momentum < -5
+            
+            if buy_signals >= 2 or strong_buy_momentum:
+                signal_reason = f"Technical signals: {buy_signals}/3" if buy_signals >= 2 else "Strong momentum"
+                logger.info(f"🟢 STRONG BUY signal for {symbol} - {signal_reason}")
                 await self.update_account_balance()
                 if self.account_balance is None or self.account_balance <= 0:
                     logger.warning(f"Cannot open new position for {symbol}: Insufficient balance")
@@ -170,9 +322,9 @@ class TradingBot:
                     logger.warning(f"Cannot open new position for {symbol}: Invalid position size")
                     return
                 await self.place_order(symbol, SIDE_BUY, quantity)
-            elif current_rsi > 60 and not trend_up:
-                # RSI overbought + trend down = ขาย
-                logger.info(f"RSI overbought ({current_rsi:.2f}) + trend down = SELL signal for {symbol}")
+            elif sell_signals >= 2 or strong_sell_momentum:
+                signal_reason = f"Technical signals: {sell_signals}/3" if sell_signals >= 2 else "Strong momentum"
+                logger.info(f"🔴 STRONG SELL signal for {symbol} - {signal_reason}")
                 await self.update_account_balance()
                 if self.account_balance is None or self.account_balance <= 0:
                     logger.warning(f"Cannot open new position for {symbol}: Insufficient balance")
@@ -182,6 +334,9 @@ class TradingBot:
                     logger.warning(f"Cannot open new position for {symbol}: Invalid position size")
                     return
                 await self.place_order(symbol, SIDE_SELL, quantity)
+            else:
+                logger.info(f"⚪ No clear signal for {symbol} (Buy: {buy_signals}, Sell: {sell_signals}, Momentum: {price_momentum:.2f}%)")
+                
         except Exception as e:
             logger.error(f"Error checking market conditions for {symbol}: {str(e)}")
             await self.notification.notify(f"Error checking market conditions for {symbol}: {str(e)}")
