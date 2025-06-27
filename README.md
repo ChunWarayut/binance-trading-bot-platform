@@ -1,159 +1,165 @@
-# Binance Futures Trading Bot
+# Crypto Trading Bot - 20 Advanced Strategies
 
-A robust trading bot for Binance Futures with trailing stop loss, multi-channel notifications, and comprehensive logging.
+A sophisticated cryptocurrency trading bot that uses **20 advanced technical analysis strategies** to make trading decisions on Binance Futures.
 
 ## Features
 
-- Binance Futures trading integration
-- Trailing Stop Loss implementation
-- Multi-channel notifications (Telegram, Email, Discord)
-- Comprehensive logging system
-- Docker containerization
-- Risk management and profit optimization
+- **20 Advanced Trading Strategies** combining multiple technical indicators
+- **Priority Signals** for quick entry during strong market conditions
+- **Real-time market monitoring** with 15-minute intervals
+- **Automated position management** with trailing stops
+- **Multi-channel notifications** (Telegram, Email, Discord)
+- **Risk management** with configurable position sizing
+- **Comprehensive logging** and trade history tracking
+- **Weighted decision system** for optimal signal accuracy
 
-## Prerequisites
+## Trading Strategies
 
-- Python 3.11 or higher
-- Docker and Docker Compose
-- Binance Futures account with API access
-- Telegram bot token (optional)
-- Gmail account for email notifications (optional)
-- Discord server with webhook access (optional)
+### Priority Strategies (Immediate Execution)
+
+1. **Emergency Signal** 🚨
+   - Quick entry when 2 out of 3 original strategies agree
+   - Executes immediately without waiting for consensus
+   - Perfect for catching fast-moving opportunities
+
+2. **Strong Trend Signal** 📈
+   - Detects markets with strong momentum
+   - Requires: Price momentum > 2%, Volume > 130%, Range expansion > 120%
+   - RSI and MACD momentum confirmation
+
+3. **Breakout Signal** 🚀
+   - Identifies price breakouts with volume confirmation
+   - Triggers when price breaks above/below recent highs/lows
+   - Volume must be 150% above average
+
+4. **Momentum Acceleration Signal** ⚡
+   - Detects accelerating price movements
+   - Measures rate of change of rate of change
+   - Volume and RSI acceleration confirmation
+
+### Original Strategies (Conservative - 3x Weight)
+
+5. **MACD + Trend Signal**
+   - Uses MACD crossover with SMA trend confirmation
+   - Bullish: MACD crosses above signal line + SMA20 > SMA50
+   - Bearish: MACD crosses below signal line + SMA20 < SMA50
+
+6. **Bollinger Bands + RSI**
+   - Combines Bollinger Bands with RSI for entry/exit signals
+   - Bullish: Price at lower band + RSI oversold (< 30)
+   - Bearish: Price at upper band + RSI overbought (> 70)
+
+7. **Stochastic + Williams %R**
+   - Uses Stochastic Oscillator with Williams %R confirmation
+   - Bullish: Stochastic oversold (< 20) + Williams %R oversold (< -80)
+   - Bearish: Stochastic overbought (> 80) + Williams %R overbought (> -20)
+
+### Aggressive Strategies (1x Weight)
+
+8. **Fibonacci + RSI**
+9. **Parabolic SAR + ADX**
+10. **Keltner Channel + CCI**
+11. **Pivot Points + RSI**
+12. **Money Flow Index + Volume**
+13. **ATR + Moving Average**
+14. **RVI + Stochastic**
+15. **CCI + Bollinger Bands**
+16. **OBV + Price Action**
+17. **Chaikin Money Flow + MACD**
+18. **ROC + Moving Average Crossover**
+
+## Decision Logic
+
+### Priority Execution (Immediate)
+- **Emergency Signal**: 2 out of 3 original strategies agree
+- **Strong Trend Signal**: Multiple momentum indicators align
+- **Breakout Signal**: Price breaks key levels with volume
+- **Momentum Acceleration**: Price acceleration with confirmation
+
+### Regular Execution (Consensus)
+- **Original strategies** get 3x weight (more conservative and proven)
+- **New strategies** get 1x weight (more aggressive and experimental)
+- **Strong signal conditions**:
+  - At least 5 out of 16 signals agree (30% consensus)
+  - OR 2 original + 2 new signals
+  - OR High weighted score (≥8)
+  - OR Strong momentum with volume confirmation
+
+### Signal Priority Order
+1. **Priority Signals** (Emergency, Strong Trend, Breakout, Momentum Acceleration)
+2. **Regular Consensus Signals** (16 strategies with weighted scoring)
+3. **Momentum-based Signals** (Strong price/volume/RSI momentum)
+
+## Configuration
+
+Edit `bot_config.json` to customize:
+
+```json
+{
+  "TRADING_PAIRS": ["BTCUSDT", "ETHUSDT", "BNBUSDT"],
+  "LEVERAGE": 3,
+  "TRAILING_STOP_PERCENTAGE": 1.0,
+  "TAKE_PROFIT_PERCENTAGE": 2.0,
+  "MIN_NOTIONAL": 20.0,
+  "MIN_BALANCE_THRESHOLD": 100.0,
+  "POSITION_SIZE_BUFFER": 0.9
+}
+```
 
 ## Setup
-
-1. Clone the repository:
-```bash
-git clone <repository-url>
-cd bot-trade
-```
-
-2. Create a `.env` file based on `.env.example`:
-```bash
-cp .env.example .env
-```
-
-3. Edit the `.env` file with your credentials:
-- Add your Binance API key and secret
-- Add your Telegram bot token and chat ID (optional)
-- Add your Gmail credentials for email notifications (optional)
-- Add your Discord webhook URL (optional)
-
-### Setting up Discord Notifications
-
-1. Create a new Discord server or use an existing one
-2. Go to Server Settings > Integrations > Webhooks
-3. Click "New Webhook"
-4. Give it a name (e.g., "Trading Bot")
-5. Select the channel where you want to receive notifications
-6. Copy the Webhook URL
-7. Add the Webhook URL to your `.env` file as `DISCORD_WEBHOOK_URL`
-
-## Running with Docker Compose
-
-1. Build and start the container:
-```bash
-docker-compose up -d
-```
-
-2. View logs:
-```bash
-docker-compose logs -f
-```
-
-3. Stop the container:
-```bash
-docker-compose down
-```
-
-## Running without Docker
 
 1. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-2. Run the bot:
+2. Set environment variables:
+```bash
+export BINANCE_API_KEY="your_api_key"
+export BINANCE_API_SECRET="your_api_secret"
+export TELEGRAM_BOT_TOKEN="your_telegram_token"
+export TELEGRAM_CHAT_ID="your_chat_id"
+```
+
+3. Run the bot:
 ```bash
 python main.py
 ```
 
-## Configuration
-
-Edit `config.py` to customize:
-- Trading pairs
-- Leverage
-- Position size
-- Trailing stop percentage
-- Take profit percentage
-- Logging settings
-
-## Configuration via bot_config.json
-
-Trading parameters (symbols, leverage, trailing stop, etc.) are now set in `bot_config.json`.
-
-Example `bot_config.json`:
-
-```
-{
-  "TRADING_PAIRS": ["ETHUSDT", "BTCUSDT"],
-  "LEVERAGE": 3,
-  "TRAILING_STOP_PERCENTAGE": 1.0,
-  "TAKE_PROFIT_PERCENTAGE": 2.0,
-  "MIN_NOTIONAL": 20.0,
-  "MIN_BALANCE_THRESHOLD": 100.0,
-  "POSITION_SIZE_BUFFER": 0.90,
-  "SMALL_ACCOUNT_POSITION_LIMIT": 0.50
-}
-```
-
-- To change trading pairs, leverage, or other parameters, edit `bot_config.json` and restart the bot.
-- You can set the config file path with the environment variable `BOT_CONFIG_PATH` if needed.
-
-## Logging
-
-Logs are stored in the `logs` directory with daily rotation and 7-day retention. When running with Docker Compose, logs are persisted in the `./logs` directory on your host machine.
-
-## Notifications
-
-The bot supports multiple notification channels:
-- Telegram: Real-time trading updates
-- Email: Detailed trade reports and error notifications
-- Discord: Real-time trading updates with customizable webhook
-
 ## Risk Warning
 
-Trading cryptocurrencies involves significant risk. This bot is provided as-is, without any guarantees of profit. Always test with small amounts first and monitor the bot's performance.
+This bot is for educational purposes. Cryptocurrency trading involves significant risk. Only trade with funds you can afford to lose.
 
-## License
+## Technical Indicators Used
 
-MIT License # binance-treade-future
-# binance-treade-future
+- **Moving Averages**: SMA 10, 25, 30, 60, EMA 5, 15
+- **RSI**: 28-period with oversold/overbought levels
+- **MACD**: 14,30,12 parameters
+- **Bollinger Bands**: 20-period, 2 standard deviations
+- **Stochastic**: 14-period with %K and %D
+- **Williams %R**: 14-period
+- **Volume SMA**: 35-period
+- **Parabolic SAR**: 0.02 acceleration factor
+- **ADX**: 14-period with DI+ and DI-
+- **Keltner Channels**: 20-period, 2 ATR multiplier
+- **CCI**: 20-period
+- **Pivot Points**: Daily calculation
+- **MFI**: 14-period
+- **ATR**: 14-period
+- **RVI**: 14-period
+- **OBV**: On-Balance Volume
+- **CMF**: 20-period
+- **ROC**: 10-period
+- **Fibonacci**: 23.6%, 38.2%, 50%, 61.8%, 78.6% levels
 
-## Web UI
+## Performance Monitoring
 
-The bot includes a web-based dashboard for monitoring and configuration:
-
-### Accessing the Web UI
-- **URL**: `http://your-server-ip:8501`
-- **Default Port**: 8501
-
-### Features
-- **Dashboard**: Real-time bot status, active trades, and performance metrics
-- **Configuration**: Easy modification of trading parameters without editing files
-- **Logs**: View and search bot logs with statistics
-- **Bot Control**: Start, stop, and restart the bot (when implemented)
-
-### Starting the Web UI
-```bash
-# Using Docker Compose (recommended)
-docker-compose up -d
-
-# Or run directly
-streamlit run web_ui.py --server.port 8501 --server.address 0.0.0.0
-```
-
-### Web UI Configuration
-- All configuration changes are saved to `bot_config.json`
-- Changes require bot restart to take effect
-- The UI provides validation and helpful tooltips
+The bot tracks:
+- Signal accuracy per strategy category
+- Priority vs regular signal performance
+- Win/loss ratios per strategy
+- Average profit per trade
+- Maximum drawdown
+- Sharpe ratio
+- Strategy correlation analysis
+- Weighted score performance
