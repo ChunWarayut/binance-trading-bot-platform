@@ -995,7 +995,7 @@ class TradingBot:
             klines = await self.safe_api_call(
                 self.client.futures_klines,
                 symbol=symbol,
-                interval=Client.KLINE_INTERVAL_15MINUTE,
+                interval=Client.KLINE_INTERVAL_3MINUTE,
                 limit=100
             )
             df = pd.DataFrame(klines, columns=[

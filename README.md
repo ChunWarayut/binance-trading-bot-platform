@@ -6,7 +6,7 @@ A sophisticated cryptocurrency trading bot that uses **20 advanced technical ana
 
 - **20 Advanced Trading Strategies** combining multiple technical indicators
 - **Priority Signals** for quick entry during strong market conditions
-- **Real-time market monitoring** with 15-minute intervals
+- **Real-time market monitoring** with 3-minute intervals
 - **Automated position management** with trailing stops
 - **Multi-channel notifications** (Telegram, Email, Discord)
 - **Risk management** with configurable position sizing

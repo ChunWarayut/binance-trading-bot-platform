@@ -22,10 +22,7 @@ services:
       driver: "json-file"
       options:
         max-size: "10m"
-        max-file: "3" 
-    networks:
-      trading-network:
-        ipv4_address: 124.122.123.131
+        max-file: "3"
 
   web-ui:
     build: .

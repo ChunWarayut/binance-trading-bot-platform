@@ -2,6 +2,8 @@
 
 This document provides detailed examples of how each of the 16 trading strategies works in practice.
 
+**Timeframe**: All strategies operate on 3-minute candlesticks for high-frequency trading and quick signal generation.
+
 ## Conservative Strategies (3x Weight)
 
 ### 1. MACD + Trend Signal
