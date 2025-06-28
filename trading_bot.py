@@ -11,6 +11,8 @@ import pandas_ta as ta
 from binance.exceptions import BinanceAPIException, BinanceOrderException
 import json
 import os
+from coin_analysis import CoinAnalyzer
+from typing import Dict
 
 class TradingBot:
     def __init__(self):
@@ -21,6 +23,10 @@ class TradingBot:
         self.last_heartbeat = time.time()
         self.account_balance = None
         self.last_rsi = {}
+        self.coin_analyzer = CoinAnalyzer(self.client)
+        self.coin_analyses = {}
+        self.last_analysis_time = 0
+        self.analysis_interval = 3600  # 1 hour
 
     def setup_logging(self):
         logger.add(
@@ -990,205 +996,234 @@ class TradingBot:
 
     async def check_market_conditions(self, symbol):
         try:
-            ticker = await self.safe_api_call(self.client.futures_symbol_ticker, symbol=symbol)
-            current_price = float(ticker['price'])
+            # ตรวจสอบ balance ก่อน
+            await self.update_account_balance()
+            if self.account_balance is None:
+                logger.warning(f"Cannot check market conditions for {symbol}: Account balance is None")
+                return
+            
+            account = await self.safe_api_call(self.client.futures_account)
+            available_balance = float(account['availableBalance'])
+            
+            if available_balance < 5:  # ขั้นต่ำ 5 USDT
+                logger.warning(f"Insufficient balance for trading: {available_balance} USDT")
+                return
+            
+            # ดึงข้อมูลราคา
             klines = await self.safe_api_call(
                 self.client.futures_klines,
                 symbol=symbol,
-                interval=Client.KLINE_INTERVAL_3MINUTE,
+                interval=Client.KLINE_INTERVAL_1MINUTE,
                 limit=100
             )
+            
+            if not klines:
+                logger.warning(f"No kline data available for {symbol}")
+                return
+            
             df = pd.DataFrame(klines, columns=[
                 'timestamp', 'open', 'high', 'low', 'close', 'volume',
-                'close_time', 'quote_volume', 'trades', 'taker_buy_base',
-                'taker_buy_quote', 'ignore'
+                'close_time', 'quote_asset_volume', 'number_of_trades',
+                'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
             ])
-            for col in ['open', 'high', 'low', 'close']:
-                df[col] = df[col].astype(float)
-            # Also convert volume to numeric
-            df['volume'] = pd.to_numeric(df['volume'], errors='coerce').fillna(0)
-            df = self.calculate_indicators(df)
             
-            # Get all signals from 16 strategies (3 original + 13 new)
-            # Original strategies
-            macd_signal = self.check_macd_trend_signal(df)
-            bb_rsi_signal = self.check_bollinger_rsi_signal(df, current_price)
-            stoch_williams_signal = self.check_stochastic_williams_signal(df)
+            df['close'] = pd.to_numeric(df['close'])
+            df['high'] = pd.to_numeric(df['high'])
+            df['low'] = pd.to_numeric(df['low'])
+            df['volume'] = pd.to_numeric(df['volume'])
             
-            # New strategies
-            fib_rsi_signal = self.check_fibonacci_rsi_signal(df)
-            parabolic_sar_adx_signal = self.check_parabolic_sar_adx_signal(df)
-            keltner_cci_signal = self.check_keltner_cci_signal(df)
-            pivot_points_rsi_signal = self.check_pivot_points_rsi_signal(df)
-            money_flow_volume_signal = self.check_money_flow_volume_signal(df)
-            atr_moving_average_signal = self.check_atr_moving_average_signal(df)
-            rvi_stochastic_signal = self.check_rvi_stochastic_signal(df)
-            cci_bollinger_signal = self.check_cci_bollinger_signal(df)
-            obv_price_action_signal = self.check_obv_price_action_signal(df)
-            chaikin_money_flow_macd_signal = self.check_chaikin_money_flow_macd_signal(df)
-            roc_moving_average_crossover_signal = self.check_roc_moving_average_crossover_signal(df)
+            current_price = float(df['close'].iloc[-1])
             
-            # Emergency and Strong Trend strategies (Priority signals)
-            emergency_signal = self.check_emergency_signal(df)
-            strong_trend_signal = self.check_strong_trend_signal(df)
-            breakout_signal = self.check_breakout_signal(df)
-            momentum_acceleration_signal = self.check_momentum_acceleration_signal(df)
+            # คำนวณ indicators
+            indicators = self.calculate_indicators(df)
+            current_rsi = indicators['rsi'].iloc[-1]
             
-            # Get momentum signals
-            price_momentum, volume_spike, rsi_momentum = self.check_momentum_signal(df)
-            
-            # Log all indicators
+            # ตรวจสอบ margin ก่อนที่จะทำการเทรด
             try:
-                current_rsi = float(df['rsi'].iloc[-1])
-                current_macd = float(df['macd'].iloc[-1])
-                current_stoch_k = float(df['stoch_k'].iloc[-1])
-                current_williams_r = float(df['williams_r'].iloc[-1])
-                bb_upper = float(df['bb_upper'].iloc[-1])
-                bb_lower = float(df['bb_lower'].iloc[-1])
+                # ดึง leverage ปัจจุบัน
+                position_info = await self.safe_api_call(self.client.futures_position_information, symbol=symbol)
+                current_leverage = float(position_info[0]['leverage']) if position_info else config.LEVERAGE
                 
-                logger.info(f"Monitoring {symbol} - Price: {current_price}")
-                logger.info(f"Indicators: RSI={current_rsi:.2f}, MACD={current_macd:.4f}, StochK={current_stoch_k:.2f}, WilliamsR={current_williams_r:.2f}")
-                logger.info(f"Bollinger: Upper={bb_upper:.2f}, Lower={bb_lower:.2f}")
+                # คำนวณ position size ที่ต้องการ
+                coin_recommendations = await self.get_coin_recommendations(symbol)
+                position_size_multiplier = coin_recommendations.get('recommendations', {}).get('position_size_multiplier', 0.6)
                 
-                # Log all signals
-                all_signals = [
-                    ("MACD+Trend", macd_signal),
-                    ("BB+RSI", bb_rsi_signal),
-                    ("Stoch+Williams", stoch_williams_signal),
-                    ("Fib+RSI", fib_rsi_signal),
-                    ("Parabolic+ADX", parabolic_sar_adx_signal),
-                    ("Keltner+CCI", keltner_cci_signal),
-                    ("Pivot+RSI", pivot_points_rsi_signal),
-                    ("MFI+Volume", money_flow_volume_signal),
-                    ("ATR+MA", atr_moving_average_signal),
-                    ("RVI+Stoch", rvi_stochastic_signal),
-                    ("CCI+BB", cci_bollinger_signal),
-                    ("OBV+Price", obv_price_action_signal),
-                    ("CMF+MACD", chaikin_money_flow_macd_signal),
-                    ("ROC+MA", roc_moving_average_crossover_signal)
-                ]
+                # คำนวณ margin requirement
+                margin_requirement = 1.0 / current_leverage
                 
-                priority_signals = [
-                    ("Emergency", emergency_signal),
-                    ("Strong Trend", strong_trend_signal),
-                    ("Breakout", breakout_signal),
-                    ("Momentum Accel", momentum_acceleration_signal)
-                ]
+                # คำนวณ position size ที่ปลอดภัย
+                if available_balance < config.MIN_BALANCE_THRESHOLD:
+                    safe_balance = available_balance * 0.8
+                else:
+                    safe_balance = available_balance * config.POSITION_SIZE_BUFFER
                 
-                buy_signals_list = [name for name, signal in all_signals if signal == "BUY"]
-                sell_signals_list = [name for name, signal in all_signals if signal == "SELL"]
-                priority_buy_signals = [name for name, signal in priority_signals if signal == "BUY"]
-                priority_sell_signals = [name for name, signal in priority_signals if signal == "SELL"]
+                max_position_value = safe_balance * current_leverage * position_size_multiplier
+                estimated_quantity = max_position_value / current_price
+                estimated_notional = estimated_quantity * current_price
+                required_margin = estimated_notional * margin_requirement
                 
-                logger.info(f"Regular Buy Signals: {buy_signals_list}")
-                logger.info(f"Regular Sell Signals: {sell_signals_list}")
-                logger.info(f"Priority Buy Signals: {priority_buy_signals}")
-                logger.info(f"Priority Sell Signals: {priority_sell_signals}")
-                logger.info(f"Momentum: Price={price_momentum:.2f}%, Volume Spike={volume_spike}, RSI Momentum={rsi_momentum:.2f}")
+                # ตรวจสอบว่า margin พอหรือไม่
+                if required_margin > available_balance:
+                    logger.warning(f"Insufficient margin for {symbol}: Required={required_margin:.2f} USDT, Available={available_balance:.2f} USDT")
+                    return
                 
-                self.last_rsi[symbol] = current_rsi
-            except (ValueError, TypeError, IndexError) as e:
-                logger.warning(f"Error logging indicators for {symbol}: {e}")
-                self.last_rsi[symbol] = 50.0  # Default neutral RSI value
-            if symbol in self.active_trades:
-                return
+                logger.info(f"✅ Margin check passed for {symbol}: Required={required_margin:.2f} USDT, Available={available_balance:.2f} USDT")
+                
+            except Exception as e:
+                logger.warning(f"Could not verify margin for {symbol}: {e}")
+                # ดำเนินการต่อแม้จะไม่สามารถตรวจสอบ margin ได้
             
-            # Priority signal check (Emergency and Strong Trend signals)
-            if emergency_signal == "BUY" or strong_trend_signal == "BUY" or breakout_signal == "BUY" or momentum_acceleration_signal == "BUY":
-                priority_reason = f"Priority signal: {[name for name, signal in priority_signals if signal == 'BUY']}"
-                logger.info(f"🚨 PRIORITY BUY signal for {symbol} - {priority_reason}")
-                await self.update_account_balance()
-                if self.account_balance is None or self.account_balance <= 0:
-                    logger.warning(f"Cannot open new position for {symbol}: Insufficient balance")
-                    return
-                quantity = await self.calculate_position_size(symbol, current_price)
-                if quantity is None:
-                    logger.warning(f"Cannot open new position for {symbol}: Invalid position size")
-                    return
-                await self.place_order(symbol, SIDE_BUY, quantity)
-                return
-            elif emergency_signal == "SELL" or strong_trend_signal == "SELL" or breakout_signal == "SELL" or momentum_acceleration_signal == "SELL":
-                priority_reason = f"Priority signal: {[name for name, signal in priority_signals if signal == 'SELL']}"
-                logger.info(f"🚨 PRIORITY SELL signal for {symbol} - {priority_reason}")
-                await self.update_account_balance()
-                if self.account_balance is None or self.account_balance <= 0:
-                    logger.warning(f"Cannot open new position for {symbol}: Insufficient balance")
-                    return
-                quantity = await self.calculate_position_size(symbol, current_price)
-                if quantity is None:
-                    logger.warning(f"Cannot open new position for {symbol}: Invalid position size")
-                    return
-                await self.place_order(symbol, SIDE_SELL, quantity)
-                return
+            # ตรวจสอบสัญญาณต่างๆ
+            signals = []
             
-            # Count signals from all 16 strategies
-            all_signals = [macd_signal, bb_rsi_signal, stoch_williams_signal, 
-                          fib_rsi_signal, parabolic_sar_adx_signal, keltner_cci_signal,
-                          pivot_points_rsi_signal, money_flow_volume_signal, atr_moving_average_signal,
-                          rvi_stochastic_signal, cci_bollinger_signal, obv_price_action_signal,
-                          chaikin_money_flow_macd_signal, roc_moving_average_crossover_signal]
+            # MACD Trend Signal
+            if self.check_macd_trend_signal(df):
+                signals.append("MACD Trend")
             
-            buy_signals = sum([1 for signal in all_signals if signal == "BUY"])
-            sell_signals = sum([1 for signal in all_signals if signal == "SELL"])
+            # Bollinger RSI Signal
+            if self.check_bollinger_rsi_signal(df, current_price):
+                signals.append("Bollinger RSI")
             
-            # Enhanced decision logic with strategy weighting
-            # Original strategies (more conservative) get higher weight
-            original_buy_signals = sum([1 for signal in [macd_signal, bb_rsi_signal, stoch_williams_signal] if signal == "BUY"])
-            original_sell_signals = sum([1 for signal in [macd_signal, bb_rsi_signal, stoch_williams_signal] if signal == "SELL"])
+            # Stochastic Williams Signal
+            if self.check_stochastic_williams_signal(df):
+                signals.append("Stochastic Williams")
             
-            # New strategies (more aggressive) get lower weight
-            new_buy_signals = buy_signals - original_buy_signals
-            new_sell_signals = sell_signals - original_sell_signals
+            # Momentum Signal
+            if self.check_momentum_signal(df):
+                signals.append("Momentum")
             
-            # Weighted decision: Original strategies count more
-            weighted_buy_score = (original_buy_signals * 3) + new_buy_signals
-            weighted_sell_score = (original_sell_signals * 3) + new_sell_signals
+            # Fibonacci RSI Signal
+            if self.check_fibonacci_rsi_signal(df):
+                signals.append("Fibonacci RSI")
             
-            # Strong signal conditions
-            strong_buy_condition = (
-                buy_signals >= 5 or  # At least 5 out of 16 signals (30% consensus)
-                (original_buy_signals >= 2 and new_buy_signals >= 2) or  # 2 original + 2 new
-                weighted_buy_score >= 8 or  # High weighted score
-                (price_momentum > 1.5 and volume_spike and rsi_momentum > 8)  # Strong momentum
-            )
+            # Parabolic SAR ADX Signal
+            if self.check_parabolic_sar_adx_signal(df):
+                signals.append("Parabolic SAR ADX")
             
-            strong_sell_condition = (
-                sell_signals >= 5 or  # At least 5 out of 16 signals (30% consensus)
-                (original_sell_signals >= 2 and new_sell_signals >= 2) or  # 2 original + 2 new
-                weighted_sell_score >= 8 or  # High weighted score
-                (price_momentum < -1.5 and volume_spike and rsi_momentum < -8)  # Strong momentum
-            )
+            # Keltner CCI Signal
+            if self.check_keltner_cci_signal(df):
+                signals.append("Keltner CCI")
             
-            if strong_buy_condition:
-                signal_reason = f"Technical signals: {buy_signals}/16 (Weighted: {weighted_buy_score})" if buy_signals >= 5 else "Strong momentum"
-                logger.info(f"🟢 STRONG BUY signal for {symbol} - {signal_reason}")
-                await self.update_account_balance()
-                if self.account_balance is None or self.account_balance <= 0:
-                    logger.warning(f"Cannot open new position for {symbol}: Insufficient balance")
-                    return
-                quantity = await self.calculate_position_size(symbol, current_price)
-                if quantity is None:
-                    logger.warning(f"Cannot open new position for {symbol}: Invalid position size")
-                    return
-                await self.place_order(symbol, SIDE_BUY, quantity)
-            elif strong_sell_condition:
-                signal_reason = f"Technical signals: {sell_signals}/16 (Weighted: {weighted_sell_score})" if sell_signals >= 5 else "Strong momentum"
-                logger.info(f"🔴 STRONG SELL signal for {symbol} - {signal_reason}")
-                await self.update_account_balance()
-                if self.account_balance is None or self.account_balance <= 0:
-                    logger.warning(f"Cannot open new position for {symbol}: Insufficient balance")
-                    return
-                quantity = await self.calculate_position_size(symbol, current_price)
-                if quantity is None:
-                    logger.warning(f"Cannot open new position for {symbol}: Invalid position size")
-                    return
-                await self.place_order(symbol, SIDE_SELL, quantity)
+            # Pivot Points RSI Signal
+            if self.check_pivot_points_rsi_signal(df):
+                signals.append("Pivot Points RSI")
+            
+            # Money Flow Volume Signal
+            if self.check_money_flow_volume_signal(df):
+                signals.append("Money Flow Volume")
+            
+            # ATR Moving Average Signal
+            if self.check_atr_moving_average_signal(df):
+                signals.append("ATR Moving Average")
+            
+            # RVI Stochastic Signal
+            if self.check_rvi_stochastic_signal(df):
+                signals.append("RVI Stochastic")
+            
+            # CCI Bollinger Signal
+            if self.check_cci_bollinger_signal(df):
+                signals.append("CCI Bollinger")
+            
+            # OBV Price Action Signal
+            if self.check_obv_price_action_signal(df):
+                signals.append("OBV Price Action")
+            
+            # Chaikin Money Flow MACD Signal
+            if self.check_chaikin_money_flow_macd_signal(df):
+                signals.append("Chaikin Money Flow MACD")
+            
+            # ROC Moving Average Crossover Signal
+            if self.check_roc_moving_average_crossover_signal(df):
+                signals.append("ROC Moving Average Crossover")
+            
+            # Emergency Signal
+            if self.check_emergency_signal(df):
+                signals.append("Emergency")
+            
+            # Strong Trend Signal
+            if self.check_strong_trend_signal(df):
+                signals.append("Strong Trend")
+            
+            # Breakout Signal
+            if self.check_breakout_signal(df):
+                signals.append("Breakout")
+            
+            # Momentum Acceleration Signal
+            if self.check_momentum_acceleration_signal(df):
+                signals.append("Momentum Acceleration")
+            
+            # ส่งข้อมูล technical indicators
+            await self.send_technical_indicators(symbol, current_price, current_rsi)
+            
+            # ตรวจสอบสัญญาณและทำการเทรด
+            if len(signals) >= 2:  # ต้องมีสัญญาณอย่างน้อย 2 ตัว
+                logger.info(f"Multiple signals detected for {symbol}: {', '.join(signals)}")
+                
+                # ตรวจสอบว่าไม่มี position อยู่แล้ว
+                if symbol not in self.active_trades:
+                    # ตรวจสอบ balance อีกครั้งก่อนวาง order
+                    if available_balance >= 5:  # ขั้นต่ำ 5 USDT
+                        await self.place_order(symbol, SIDE_BUY, 0)  # ใช้ 0 เพื่อให้ calculate_position_size คำนวณ
+                    else:
+                        logger.warning(f"Insufficient balance for {symbol}: {available_balance} USDT")
+                else:
+                    logger.info(f"Position already exists for {symbol}")
+            elif len(signals) == 1:
+                logger.info(f"Single signal detected for {symbol}: {signals[0]}")
+                # สำหรับสัญญาณเดียว อาจจะไม่เทรด หรือใช้เงื่อนไขพิเศษ
             else:
-                logger.info(f"⚪ No clear signal for {symbol} (Buy: {buy_signals}/16, Sell: {sell_signals}/16, Weighted Buy: {weighted_buy_score}, Weighted Sell: {weighted_sell_score}, Momentum: {price_momentum:.2f}%)")
+                logger.debug(f"No signals detected for {symbol}")
                 
+            # --- INTEGRATE MULTI-TIMEFRAME SIGNAL CONFIRMATION ---
+            # ดึงข้อมูลแต่ละไทม์เฟรม (ลบ 1m, 5m ออก)
+            timeframes = ['15m', '1h', '4h', '1d']
+            tf_signals = {}
+            for tf in timeframes:
+                try:
+                    klines_tf = await self.safe_api_call(
+                        self.client.futures_klines,
+                        symbol=symbol,
+                        interval=tf,
+                        limit=100
+                    )
+                    if not klines_tf:
+                        continue
+                    df_tf = pd.DataFrame(klines_tf, columns=[
+                        'timestamp', 'open', 'high', 'low', 'close', 'volume',
+                        'close_time', 'quote_asset_volume', 'number_of_trades',
+                        'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+                    ])
+                    df_tf['close'] = pd.to_numeric(df_tf['close'])
+                    df_tf['high'] = pd.to_numeric(df_tf['high'])
+                    df_tf['low'] = pd.to_numeric(df_tf['low'])
+                    df_tf['volume'] = pd.to_numeric(df_tf['volume'])
+                    # ใช้ MACD trend signal เป็นตัวอย่าง (คุณสามารถรวม logic อื่นๆ ได้)
+                    signal = self.check_macd_trend_signal(df_tf)
+                    if signal:
+                        tf_signals[tf] = signal.lower()  # 'buy' หรือ 'sell'
+                except Exception as e:
+                    logger.warning(f"Error getting signal for {symbol} {tf}: {e}")
+                    continue
+            # ใช้ฟังก์ชัน confirm_signal_across_timeframes จาก coin_analyzer
+            confirmed_signal = self.coin_analyzer.confirm_signal_across_timeframes(tf_signals, min_confirm=2)
+            if confirmed_signal:
+                logger.info(f"[Multi-TF] Confirmed signal for {symbol}: {confirmed_signal.upper()} ({tf_signals})")
+                if symbol not in self.active_trades:
+                    if available_balance >= 5:
+                        side = SIDE_BUY if confirmed_signal == 'buy' else SIDE_SELL
+                        await self.place_order(symbol, side, 0)
+                    else:
+                        logger.warning(f"Insufficient balance for {symbol}: {available_balance} USDT")
+                else:
+                    logger.info(f"Position already exists for {symbol}")
+            else:
+                logger.info(f"[Multi-TF] No confirmed signal for {symbol} (signals: {tf_signals})")
+            # --- END MULTI-TIMEFRAME SIGNAL CONFIRMATION ---
+
+            # (Optional) คุณสามารถคง logic signals แบบเดิมไว้ หรือคอมเมนต์ออก
+            # ...
         except Exception as e:
             logger.error(f"Error checking market conditions for {symbol}: {str(e)}")
-            await self.notification.notify(f"Error checking market conditions for {symbol}: {str(e)}")
 
     async def verify_api_connection(self):
         try:
@@ -1281,17 +1316,55 @@ class TradingBot:
         else:
             return round(quantity, precision)
 
+    async def analyze_coins(self):
+        """วิเคราะห์เหรียญทั้งหมดและอัปเดตคำแนะนำ"""
+        try:
+            current_time = time.time()
+            if current_time - self.last_analysis_time < self.analysis_interval:
+                return self.coin_analyses
+            
+            logger.info("🔄 เริ่มวิเคราะห์เหรียญ...")
+            await self.notification.notify("🔄 กำลังวิเคราะห์เหรียญเพื่อคำนวณ order size และ leverage...")
+            
+            self.coin_analyses = await self.coin_analyzer.analyze_all_coins(config.TRADING_PAIRS)
+            self.last_analysis_time = current_time
+            
+            # ส่งรายงานสรุป
+            summary_report = self.coin_analyzer.get_summary_report(self.coin_analyses)
+            await self.notification.notify(summary_report)
+            
+            logger.info("✅ วิเคราะห์เหรียญเสร็จสิ้น")
+            return self.coin_analyses
+            
+        except Exception as e:
+            logger.error(f"❌ เกิดข้อผิดพลาดในการวิเคราะห์เหรียญ: {e}")
+            await self.notification.notify(f"❌ เกิดข้อผิดพลาดในการวิเคราะห์เหรียญ: {e}")
+            return {}
+
+    async def get_coin_recommendations(self, symbol: str) -> Dict:
+        """ดึงคำแนะนำสำหรับเหรียญเฉพาะ"""
+        if not self.coin_analyses or symbol not in self.coin_analyses:
+            await self.analyze_coins()
+        
+        return self.coin_analyses.get(symbol, {})
+
     async def calculate_position_size(self, symbol, current_price):
         try:
             await self.update_account_balance()
             if self.account_balance is None:
                 logger.error("Cannot calculate position size: Account balance is None")
                 return None
+            
             account = await self.safe_api_call(self.client.futures_account)
             available_balance = float(account['availableBalance'])
             if available_balance <= 0:
                 logger.warning(f"Insufficient available balance: {available_balance} USDT")
                 return None
+            
+            # ดึงคำแนะนำจาก coin analysis
+            coin_recommendations = await self.get_coin_recommendations(symbol)
+            position_size_multiplier = coin_recommendations.get('recommendations', {}).get('position_size_multiplier', 0.6)
+            leverage_recommendation = coin_recommendations.get('recommendations', {}).get('leverage', {}).get('recommended', config.LEVERAGE)
             
             # Get symbol info for margin requirements
             symbol_info = await self.safe_api_call(self.client.futures_exchange_info)
@@ -1299,82 +1372,94 @@ class TradingBot:
             lot_size_filter = next(filter(lambda x: x['filterType'] == 'LOT_SIZE', symbol_filters['filters']))
             step_size = float(lot_size_filter['stepSize'])
             
-            # Get margin requirements (usually 1/leverage for isolated margin)
-            current_leverage = config.LEVERAGE
-            margin_requirement = 1.0 / current_leverage  # 1/leverage for isolated margin
-            
+            # คำนวณ position size ที่ปลอดภัย
             if available_balance < config.MIN_BALANCE_THRESHOLD:
-                # เทหมดหน้าตักสำหรับบัญชีเล็ก
-                max_position_value = available_balance * current_leverage
-                quantity = max_position_value / current_price
+                # สำหรับบัญชีเล็ก ใช้ 80% ของ available balance
+                safe_balance = available_balance * 0.8
             else:
-                max_position_value = (available_balance * config.POSITION_SIZE_BUFFER) * current_leverage
-                quantity = max_position_value / current_price
+                # สำหรับบัญชีใหญ่ ใช้ buffer
+                safe_balance = available_balance * config.POSITION_SIZE_BUFFER
             
+            # ตรวจสอบ minimum notional
             min_notional = config.MIN_NOTIONAL
             min_quantity = min_notional / current_price
             min_quantity = self.format_quantity(min_quantity, step_size)
-            quantity = max(quantity, min_quantity)
-            quantity = self.format_quantity(quantity, step_size)
-            notional_value = quantity * current_price
             
-            # Calculate required margin
-            required_margin = notional_value * margin_requirement
-            logger.info(f"Position calculation for {symbol}: Notional={notional_value:.2f} USDT, Required Margin={required_margin:.2f} USDT, Available={available_balance:.2f} USDT")
+            # AGGRESSIVE LEVERAGE LOOP - ไล่ leverage ขึ้นไปเรื่อยๆ
+            max_leverage = 125  # Max leverage ที่ Binance อนุญาต
+            leverage_step = 5   # เพิ่มทีละ 5x
             
-            # ถ้า notional ไม่ถึงขั้นต่ำ หรือ margin ไม่พอ ให้ลองเพิ่ม leverage อัตโนมัติ
-            if notional_value < min_notional or required_margin > available_balance:
-                logger.info(f"Starting leverage loop for {symbol}: Notional={notional_value:.2f} < {min_notional} OR Required Margin={required_margin:.2f} > Available={available_balance:.2f}")
-                max_leverage = 125
-                found = False
-                for lev in range(int(current_leverage)+1, max_leverage+1):
-                    logger.info(f"Testing leverage {lev}x for {symbol}")
-                    margin_requirement = 1.0 / lev
-                    
-                    if available_balance < config.MIN_BALANCE_THRESHOLD:
-                        max_position_value = available_balance * lev
-                    else:
-                        max_position_value = (available_balance * config.POSITION_SIZE_BUFFER) * lev
-                    
-                    test_quantity = max_position_value / current_price
-                    test_quantity = max(test_quantity, min_quantity)
-                    test_quantity = self.format_quantity(test_quantity, step_size)
-                    test_notional = test_quantity * current_price
-                    test_required_margin = test_notional * margin_requirement
-                    
-                    logger.info(f"Leverage {lev}x: Notional={test_notional:.2f} USDT, Required Margin={test_required_margin:.2f} USDT")
-                    
-                    if test_notional >= min_notional and test_required_margin <= available_balance:
-                        # ตั้งค่า leverage ใหม่ผ่าน API
-                        try:
-                            await self.safe_api_call(self.client.futures_change_leverage, symbol=symbol, leverage=lev)
-                            logger.info(f"✅ Auto-increased leverage for {symbol} to {lev}x to meet requirements.")
-                            await self.notification.notify(f"🔄 Auto-increased leverage for {symbol} to {lev}x")
-                        except Exception as e:
-                            logger.error(f"Failed to set leverage: {e}")
-                            await self.notification.notify(f"Failed to set leverage: {e}")
-                            return None
-                        quantity = test_quantity
-                        notional_value = test_notional
-                        found = True
-                        break
-                
-                if not found:
-                    logger.warning(f"ทุนต่ำเกินไป แม้จะใช้ leverage 125x แล้วก็ยังไม่ถึง requirements")
-                    await self.notification.notify(
-                        f"❌ ทุนต่ำเกินไป แม้จะใช้ leverage 125x แล้วก็ยังไม่ถึง requirements\n"
-                        f"Notional: {notional_value:.2f} USDT (ขั้นต่ำ {min_notional} USDT)\n"
-                        f"Required Margin: {required_margin:.2f} USDT (Available: {available_balance:.2f} USDT)"
-                    )
-                    return None
+            logger.info(f"🚀 Starting aggressive leverage loop for {symbol}")
+            logger.info(f"Initial leverage: {leverage_recommendation}x, Max leverage: {max_leverage}x")
             
-            min_buffer = min_notional + 5
-            if notional_value < min_buffer:
-                logger.warning(f"Position size too small for {symbol}: {notional_value:.2f} USDT")
-                return None
+            for leverage in range(int(leverage_recommendation), max_leverage + 1, leverage_step):
+                try:
+                    logger.info(f"🔄 Testing leverage {leverage}x for {symbol}")
+                    
+                    # ตั้งค่า leverage ใหม่
+                    await self.safe_api_call(self.client.futures_change_leverage, symbol=symbol, leverage=leverage)
+                    
+                    # คำนวณ margin requirement
+                    margin_requirement = 1.0 / leverage
+                    
+                    # คำนวณ position size
+                    max_position_value = safe_balance * leverage * position_size_multiplier
+                    quantity = max_position_value / current_price
+                    
+                    # ใช้ quantity ที่มากกว่า
+                    quantity = max(quantity, min_quantity)
+                    quantity = self.format_quantity(quantity, step_size)
+                    
+                    # คำนวณ notional value และ required margin
+                    notional_value = quantity * current_price
+                    required_margin = notional_value * margin_requirement
+                    
+                    logger.info(f"Leverage {leverage}x: Notional={notional_value:.2f} USDT, Required Margin={required_margin:.2f} USDT, Available={available_balance:.2f} USDT")
+                    
+                    # ตรวจสอบว่า margin พอและ notional ถึงขั้นต่ำ
+                    if notional_value >= min_notional and required_margin <= available_balance:
+                        logger.info(f"✅ Found working leverage: {leverage}x")
+                        logger.info(f"Final position: Quantity={quantity}, Notional={notional_value:.2f} USDT, Margin={required_margin:.2f} USDT")
+                        
+                        # ส่งการแจ้งเตือน
+                        await self.notification.notify(
+                            f"🚀 Auto-increased leverage for {symbol} to {leverage}x\n"
+                            f"Position: {quantity} ({notional_value:.2f} USDT)\n"
+                            f"Margin: {required_margin:.2f} USDT"
+                        )
+                        
+                        # Log coin analysis info
+                        order_size_category = coin_recommendations.get('categories', {}).get('order_size', 'MEDIUM')
+                        leverage_category = coin_recommendations.get('categories', {}).get('leverage', 'MEDIUM')
+                        
+                        logger.info(f"Position calculation for {symbol}: Order Size={order_size_category}, Leverage={leverage_category}")
+                        logger.info(f"Available Balance: {available_balance:.2f} USDT, Safe Balance: {safe_balance:.2f} USDT")
+                        logger.info(f"Notional: {notional_value:.2f} USDT, Required Margin: {required_margin:.2f} USDT")
+                        
+                        # ส่งข้อมูลการวิเคราะห์
+                        analysis_notes = coin_recommendations.get('recommendations', {}).get('notes', [])
+                        if analysis_notes:
+                            await self.notification.notify(
+                                f"📊 การวิเคราะห์ {symbol}:\n" + "\n".join(analysis_notes[:3])
+                            )
+                        
+                        logger.info(f"✅ Final position size for {symbol}: {quantity} (Price: {current_price}, Notional: {notional_value:.2f} USDT, Margin: {required_margin:.2f} USDT)")
+                        return quantity
+                        
+                except Exception as e:
+                    logger.warning(f"Failed to test leverage {leverage}x: {e}")
+                    continue
             
-            logger.info(f"✅ Final position size for {symbol}: {quantity} (Price: {current_price}, Notional: {notional_value:.2f} USDT)")
-            return quantity
+            # ถ้า loop จนสุดแล้วยังไม่พอ
+            logger.warning(f"❌ ทุนต่ำเกินไป แม้จะใช้ leverage {max_leverage}x แล้วก็ยังไม่ถึง requirements")
+            await self.notification.notify(
+                f"❌ Cannot place order for {symbol}:\n"
+                f"Even maximum leverage ({max_leverage}x) requires too much margin.\n"
+                f"Available: {available_balance:.2f} USDT\n"
+                f"Minimum required: {min_notional} USDT notional value"
+            )
+            return None
+            
         except Exception as e:
             logger.error(f"Error calculating position size: {str(e)}")
             return None
@@ -1409,16 +1494,40 @@ class TradingBot:
         try:
             ticker = await self.safe_api_call(self.client.futures_symbol_ticker, symbol=symbol)
             current_price = float(ticker['price'])
+            
+            # ตรวจสอบ balance ก่อน
+            await self.update_account_balance()
+            if self.account_balance is None:
+                await self.notification.notify(f"❌ Cannot place order for {symbol}: Account balance is None")
+                return
+            
+            account = await self.safe_api_call(self.client.futures_account)
+            available_balance = float(account['availableBalance'])
+            
+            if available_balance <= 0:
+                await self.notification.notify(
+                    f"❌ Cannot place order for {symbol}:\n"
+                    f"Insufficient available balance: {available_balance} USDT"
+                )
+                return
+            
+            # คำนวณ position size ด้วย aggressive leverage
             calculated_quantity = await self.calculate_position_size(symbol, current_price)
             if calculated_quantity is None:
                 await self.notification.notify(
                     f"❌ Cannot place order for {symbol}:\n"
-                    f"Either insufficient balance or position size too small.\n"
+                    f"Even with maximum leverage (125x), position size is too small.\n"
                     f"Minimum order size: 20 USDT\n"
-                    f"Current price: {current_price} USDT"
+                    f"Current price: {current_price} USDT\n"
+                    f"Available balance: {available_balance:.2f} USDT"
                 )
                 return
-            quantity = min(quantity, calculated_quantity)
+            
+            # ใช้ quantity ที่คำนวณได้ (ถ้า quantity parameter เป็น 0 ให้ใช้ calculated_quantity)
+            if quantity <= 0:
+                quantity = calculated_quantity
+            
+            # ตรวจสอบ quantity อีกครั้ง
             if quantity <= 0:
                 await self.notification.notify(
                     f"❌ Cannot place order for {symbol}:\n"
@@ -1427,6 +1536,8 @@ class TradingBot:
                     f"Current price: {current_price} USDT"
                 )
                 return
+            
+            # ตรวจสอบ notional value
             notional_value = quantity * current_price
             if notional_value < 20.0:
                 await self.notification.notify(
@@ -1436,6 +1547,33 @@ class TradingBot:
                     f"Minimum required: 20 USDT"
                 )
                 return
+            
+            # ตรวจสอบ margin อีกครั้งก่อนวาง order
+            try:
+                # ดึง leverage ปัจจุบัน
+                position_info = await self.safe_api_call(self.client.futures_position_information, symbol=symbol)
+                current_leverage = float(position_info[0]['leverage']) if position_info else config.LEVERAGE
+                margin_requirement = 1.0 / current_leverage
+                required_margin = notional_value * margin_requirement
+                
+                if required_margin > available_balance:
+                    await self.notification.notify(
+                        f"❌ Cannot place order for {symbol}:\n"
+                        f"Insufficient margin for order.\n"
+                        f"Available balance: {available_balance:.2f} USDT\n"
+                        f"Required margin: {required_margin:.2f} USDT\n"
+                        f"Notional value: {notional_value:.2f} USDT\n"
+                        f"Leverage: {current_leverage}x"
+                    )
+                    return
+                
+                logger.info(f"✅ Margin check passed for {symbol}: Required={required_margin:.2f} USDT, Available={available_balance:.2f} USDT")
+                
+            except Exception as e:
+                logger.warning(f"Could not verify margin for {symbol}: {e}")
+                # ดำเนินการต่อแม้จะไม่สามารถตรวจสอบ margin ได้
+            
+            # วาง order
             order = await self.safe_api_call(
                 self.client.futures_create_order,
                 symbol=symbol,
@@ -1443,6 +1581,7 @@ class TradingBot:
                 type=FUTURE_ORDER_TYPE_MARKET,
                 quantity=quantity
             )
+            
             entry_price = float(order['avgPrice'])
             position_side = "LONG" if side == SIDE_BUY else "SHORT"
             self.active_trades[symbol] = {
@@ -1466,9 +1605,10 @@ class TradingBot:
                 reason="Manual"
             )
             await self.notification.notify(
-                f"New {position_side} position opened for {symbol}\n"
+                f"✅ New {position_side} position opened for {symbol}\n"
                 f"Entry Price: {entry_price}\n"
-                f"Quantity: {quantity}"
+                f"Quantity: {quantity}\n"
+                f"Notional Value: {notional_value:.2f} USDT"
             )
             logger.info(f"Order placed successfully: {order}")
             return order
@@ -1518,13 +1658,25 @@ class TradingBot:
         """Async setup method to be called after bot creation"""
         await self.verify_api_connection()
         await self.update_account_balance()
+        # วิเคราะห์เหรียญครั้งแรก
+        await self.analyze_coins()
 
     async def run(self):
         await self.setup_bot()
         await self.initialize()
+        
+        # วิเคราะห์เหรียญทุกชั่วโมง
+        last_analysis = time.time()
+        
         while True:
             try:
                 self.send_heartbeat()
+                
+                # วิเคราะห์เหรียญทุกชั่วโมง
+                current_time = time.time()
+                if current_time - last_analysis >= self.analysis_interval:
+                    await self.analyze_coins()
+                    last_analysis = current_time
                 
                 for symbol in config.TRADING_PAIRS:
                     await self.check_market_conditions(symbol)

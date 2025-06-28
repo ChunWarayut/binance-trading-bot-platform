@@ -1,10 +1,77 @@
-# Crypto Trading Bot - 20 Advanced Strategies
+# Crypto Trading Bot - 20 Advanced Strategies + Coin Analysis System
 
-A sophisticated cryptocurrency trading bot that uses **20 advanced technical analysis strategies** to make trading decisions on Binance Futures.
+A sophisticated cryptocurrency trading bot that uses **20 advanced technical analysis strategies** combined with an **intelligent coin analysis system** to make optimal trading decisions on Binance Futures.
+
+## 🆕 New Feature: Coin Analysis System
+
+The bot now includes an advanced **Coin Analysis System** that automatically determines:
+- **Optimal Order Sizes** (Large, Medium, Small) for each coin
+- **Recommended Leverage** (High, Medium, Low) based on market conditions
+- **Dynamic Risk Management** with position limits and spacing
+- **🆕 Multi-Timeframe Analysis** using 6 different timeframes in parallel
+
+### 🪙 How Coin Analysis Works
+
+The system analyzes each coin based on:
+- **Volatility Analysis**: Price fluctuation patterns across multiple timeframes
+- **Volume Analysis**: Trading volume and stability from 1m to 1d
+- **Liquidity Analysis**: Market depth and spread analysis
+- **Trend Strength Analysis**: Multi-timeframe trend confirmation
+- **🆕 Parallel Processing**: Analyzes 6 timeframes simultaneously for faster results
+
+### 📊 Coin Categories
+
+#### 🔥 LARGE Orders (100% position size)
+- **Criteria**: Low volatility (<2%), high volume (>1M), high liquidity (>70)
+- **Examples**: BTC, ETH, BNB
+- **Risk Level**: Low
+
+#### ⚖️ MEDIUM Orders (60% position size)
+- **Criteria**: Medium volatility (2-5%), balanced metrics
+- **Examples**: SOL, XRP, ADA
+- **Risk Level**: Medium
+
+#### 🔴 SMALL Orders (30% position size)
+- **Criteria**: High volatility (>5%), low volume, low liquidity
+- **Examples**: DOGE, NEAR, ICP
+- **Risk Level**: High
+
+### 🚀 Leverage Recommendations
+
+- **HIGH Leverage** (10-50x): Low volatility, strong momentum
+- **MEDIUM Leverage** (5-20x): Balanced risk/reward
+- **LOW Leverage** (1-10x): High volatility, conservative approach
+
+### 🆕 Multi-Timeframe Analysis
+
+The system now analyzes coins using **6 different timeframes** in parallel:
+
+#### ⏰ Timeframes Used
+- **1m**: Ultra-short term volatility and micro-trends
+- **5m**: Short-term price movements and momentum
+- **15m**: Medium-short term patterns and reversals
+- **1h**: Primary analysis timeframe for daily trading
+- **4h**: Medium-term trends and swing trading signals
+- **1d**: Long-term trend confirmation and position sizing
+
+#### 📊 Weighted Analysis
+The system uses weighted averages with emphasis on longer timeframes:
+- **1m**: 5% weight
+- **5m**: 10% weight
+- **15m**: 15% weight
+- **1h**: 25% weight (Primary)
+- **4h**: 25% weight (Primary)
+- **1d**: 20% weight
+
+#### ⚡ Parallel Processing
+- **Concurrent API calls** to fetch data from all timeframes simultaneously
+- **Parallel analysis** of multiple coins for faster results
+- **Real-time updates** with comprehensive market insights
 
 ## Features
 
 - **20 Advanced Trading Strategies** combining multiple technical indicators
+- **🆕 Intelligent Coin Analysis System** for optimal position sizing
 - **Priority Signals** for quick entry during strong market conditions
 - **Real-time market monitoring** with 3-minute intervals
 - **Automated position management** with trailing stops
@@ -12,6 +79,7 @@ A sophisticated cryptocurrency trading bot that uses **20 advanced technical ana
 - **Risk management** with configurable position sizing
 - **Comprehensive logging** and trade history tracking
 - **Weighted decision system** for optimal signal accuracy
+- **🆕 Coin Analysis API** for external monitoring
 
 ## Trading Strategies
 
@@ -126,6 +194,51 @@ export TELEGRAM_CHAT_ID="your_chat_id"
 python main.py
 ```
 
+## 🆕 Coin Analysis Usage
+
+### Run Coin Analysis
+```bash
+# วิเคราะห์ครั้งเดียว
+python run_coin_analysis.py
+
+# วิเคราะห์ต่อเนื่อง (ทุกชั่วโมง)
+python run_coin_analysis.py --continuous
+```
+
+### Test Coin Analysis
+```bash
+python test_coin_analysis.py
+```
+
+### 🆕 Test Multi-Timeframe Analysis
+```bash
+python test_multi_tf_analysis.py
+```
+
+### API Endpoints
+```bash
+# ดึงผลการวิเคราะห์ทั้งหมด
+curl http://localhost:5001/api/coin-analysis
+
+# ดึงผลการวิเคราะห์เหรียญเฉพาะ
+curl http://localhost:5001/api/coin-analysis/BTCUSDT
+
+# ดึงรายงานสรุป
+curl http://localhost:5001/api/coin-analysis/summary
+
+# ดึงคำแนะนำเฉพาะ
+curl http://localhost:5001/api/coin-analysis/recommendations
+```
+
+### Docker Setup
+```bash
+# รันระบบทั้งหมดรวม coin analysis API
+docker-compose up -d
+
+# ดู logs ของ coin analysis API
+docker-compose logs coin-analysis-api
+```
+
 ## Risk Warning
 
 This bot is for educational purposes. Cryptocurrency trading involves significant risk. Only trade with funds you can afford to lose.
@@ -163,3 +276,9 @@ The bot tracks:
 - Sharpe ratio
 - Strategy correlation analysis
 - Weighted score performance
+- **🆕 Coin analysis accuracy and recommendations**
+
+## 📚 Documentation
+
+- [Coin Analysis System Documentation](COIN_ANALYSIS_README.md)
+- [Strategy Examples](strategy_examples.md)

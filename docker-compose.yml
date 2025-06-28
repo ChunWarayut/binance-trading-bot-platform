@@ -50,6 +50,21 @@ services:
     depends_on:
       - trading-bot
 
+  coin-analysis-api:
+    build: .
+    command: python coin_analysis_api.py
+    ports:
+      - "5001:5001"
+    environment:
+      - BINANCE_API_KEY=${BINANCE_API_KEY}
+      - BINANCE_API_SECRET=${BINANCE_API_SECRET}
+    volumes:
+      - ./:/app/
+      - ./logs:/app/logs
+    restart: unless-stopped
+    depends_on:
+      - trading-bot
+
 networks:
   trading-network:
     driver: bridge
