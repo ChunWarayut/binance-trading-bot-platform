@@ -1386,8 +1386,11 @@ class TradingBot:
             
             # ดึงคำแนะนำจาก coin analysis
             coin_recommendations = await self.get_coin_recommendations(symbol)
-            position_size_multiplier = coin_recommendations.get('recommendations', {}).get('position_size_multiplier', 0.6)
+            position_size_multiplier = coin_recommendations.get('recommendations', {}).get('position_size_multiplier', config.POSITION_SIZE_MULTIPLIER)
             leverage_recommendation = coin_recommendations.get('recommendations', {}).get('leverage', {}).get('recommended', config.LEVERAGE)
+            
+            # จำกัด leverage ให้อยู่ในขีดจำกัดที่ปลอดภัย
+            max_safe_leverage = min(leverage_recommendation, config.MAX_LEVERAGE)
             
             # Get symbol info for margin requirements
             symbol_info = await self.safe_api_call(self.client.futures_exchange_info)
@@ -1395,93 +1398,86 @@ class TradingBot:
             lot_size_filter = next(filter(lambda x: x['filterType'] == 'LOT_SIZE', symbol_filters['filters']))
             step_size = float(lot_size_filter['stepSize'])
             
-            # คำนวณ position size ที่ปลอดภัย
+            # คำนวณ safe balance
             if available_balance < config.MIN_BALANCE_THRESHOLD:
-                # สำหรับบัญชีเล็ก ใช้ 80% ของ available balance
-                safe_balance = available_balance * 0.8
+                # สำหรับบัญชีเล็ก ใช้ SMALL_ACCOUNT_POSITION_LIMIT
+                max_position_percent = config.SMALL_ACCOUNT_POSITION_LIMIT
             else:
-                # สำหรับบัญชีใหญ่ ใช้ buffer
-                safe_balance = available_balance * config.POSITION_SIZE_BUFFER
+                # สำหรับบัญชีใหญ่ ใช้ MAX_POSITION_SIZE
+                max_position_percent = config.MAX_POSITION_SIZE
+            
+            # คำนวณ maximum position value ที่อนุญาต
+            max_position_value = available_balance * max_position_percent
+            
+            # ตั้ง leverage เป็นค่าที่เหมาะสม
+            try:
+                await self.safe_api_call(self.client.futures_change_leverage, symbol=symbol, leverage=max_safe_leverage)
+                logger.info(f"Set leverage for {symbol} to {max_safe_leverage}x")
+            except Exception as e:
+                logger.warning(f"Failed to set leverage for {symbol}: {e}")
+            
+            # คำนวณ margin requirement
+            margin_requirement = 1.0 / max_safe_leverage
+            
+            # คำนวณ position size ขึ้นอยู่กับ margin ที่มี
+            max_notional = max_position_value
+            
+            # ตรวจสอบว่า margin พอหรือไม่
+            required_margin = max_notional * margin_requirement
+            if required_margin > available_balance:
+                # ถ้า margin ไม่พอ ลด position size
+                max_notional = available_balance / margin_requirement
+            
+            # ใช้ position size multiplier
+            final_notional = max_notional * position_size_multiplier
             
             # ตรวจสอบ minimum notional
-            min_notional = config.MIN_NOTIONAL
-            min_quantity = min_notional / current_price
-            min_quantity = self.format_quantity(min_quantity, step_size)
+            if final_notional < config.MIN_NOTIONAL:
+                logger.warning(f"Position size too small for {symbol}: {final_notional:.2f} < {config.MIN_NOTIONAL} USDT")
+                await self.notification.notify(
+                    f"❌ Cannot place order for {symbol}:\n"
+                    f"Position size too small: {final_notional:.2f} USDT\n"
+                    f"Minimum required: {config.MIN_NOTIONAL} USDT"
+                )
+                return None
             
-            # AGGRESSIVE LEVERAGE LOOP - ไล่ leverage ขึ้นไปเรื่อยๆ
-            max_leverage = 125  # Max leverage ที่ Binance อนุญาต
-            leverage_step = 5   # เพิ่มทีละ 5x
+            # คำนวณ quantity
+            quantity = final_notional / current_price
+            quantity = self.format_quantity(quantity, step_size)
             
-            logger.info(f"🚀 Starting aggressive leverage loop for {symbol}")
-            logger.info(f"Initial leverage: {leverage_recommendation}x, Max leverage: {max_leverage}x")
+            # คำนวณค่าสุดท้าย
+            final_notional = quantity * current_price
+            final_margin = final_notional * margin_requirement
             
-            for leverage in range(int(leverage_recommendation), max_leverage + 1, leverage_step):
-                try:
-                    logger.info(f"🔄 Testing leverage {leverage}x for {symbol}")
-                    
-                    # ตั้งค่า leverage ใหม่
-                    await self.safe_api_call(self.client.futures_change_leverage, symbol=symbol, leverage=leverage)
-                    
-                    # คำนวณ margin requirement
-                    margin_requirement = 1.0 / leverage
-                    
-                    # คำนวณ position size
-                    max_position_value = safe_balance * leverage * position_size_multiplier
-                    quantity = max_position_value / current_price
-                    
-                    # ใช้ quantity ที่มากกว่า
-                    quantity = max(quantity, min_quantity)
-                    quantity = self.format_quantity(quantity, step_size)
-                    
-                    # คำนวณ notional value และ required margin
-                    notional_value = quantity * current_price
-                    required_margin = notional_value * margin_requirement
-                    
-                    logger.info(f"Leverage {leverage}x: Notional={notional_value:.2f} USDT, Required Margin={required_margin:.2f} USDT, Available={available_balance:.2f} USDT")
-                    
-                    # ตรวจสอบว่า margin พอและ notional ถึงขั้นต่ำ
-                    if notional_value >= min_notional and required_margin <= available_balance:
-                        logger.info(f"✅ Found working leverage: {leverage}x")
-                        logger.info(f"Final position: Quantity={quantity}, Notional={notional_value:.2f} USDT, Margin={required_margin:.2f} USDT")
-                        
-                        # ส่งการแจ้งเตือน
-                        await self.notification.notify(
-                            f"🚀 Auto-increased leverage for {symbol} to {leverage}x\n"
-                            f"Position: {quantity} ({notional_value:.2f} USDT)\n"
-                            f"Margin: {required_margin:.2f} USDT"
-                        )
-                        
-                        # Log coin analysis info
-                        order_size_category = coin_recommendations.get('categories', {}).get('order_size', 'MEDIUM')
-                        leverage_category = coin_recommendations.get('categories', {}).get('leverage', 'MEDIUM')
-                        
-                        logger.info(f"Position calculation for {symbol}: Order Size={order_size_category}, Leverage={leverage_category}")
-                        logger.info(f"Available Balance: {available_balance:.2f} USDT, Safe Balance: {safe_balance:.2f} USDT")
-                        logger.info(f"Notional: {notional_value:.2f} USDT, Required Margin: {required_margin:.2f} USDT")
-                        
-                        # ส่งข้อมูลการวิเคราะห์
-                        analysis_notes = coin_recommendations.get('recommendations', {}).get('notes', [])
-                        if analysis_notes:
-                            await self.notification.notify(
-                                f"📊 การวิเคราะห์ {symbol}:\n" + "\n".join(analysis_notes[:3])
-                            )
-                        
-                        logger.info(f"✅ Final position size for {symbol}: {quantity} (Price: {current_price}, Notional: {notional_value:.2f} USDT, Margin: {required_margin:.2f} USDT)")
-                        return quantity
-                        
-                except Exception as e:
-                    logger.warning(f"Failed to test leverage {leverage}x: {e}")
-                    continue
+            # Log การคำนวณ
+            order_size_category = coin_recommendations.get('categories', {}).get('order_size', 'MEDIUM')
+            leverage_category = coin_recommendations.get('categories', {}).get('leverage', 'MEDIUM')
             
-            # ถ้า loop จนสุดแล้วยังไม่พอ
-            logger.warning(f"❌ ทุนต่ำเกินไป แม้จะใช้ leverage {max_leverage}x แล้วก็ยังไม่ถึง requirements")
-            await self.notification.notify(
-                f"❌ Cannot place order for {symbol}:\n"
-                f"Even maximum leverage ({max_leverage}x) requires too much margin.\n"
-                f"Available: {available_balance:.2f} USDT\n"
-                f"Minimum required: {min_notional} USDT notional value"
-            )
-            return None
+            logger.info(f"Position calculation for {symbol}: Order Size={order_size_category}, Leverage={leverage_category}")
+            logger.info(f"Available Balance: {available_balance:.2f} USDT")
+            logger.info(f"Max Position %: {max_position_percent*100:.0f}%, Leverage: {max_safe_leverage}x")
+            logger.info(f"Position Value: {final_notional:.2f} USDT, Required Margin: {final_margin:.2f} USDT")
+            
+            # ตรวจสอบว่าผ่านเกณฑ์ position limit หรือไม่
+            if not self.check_position_size_limit(final_notional, available_balance):
+                logger.warning(f"Position size limit check failed for {symbol}")
+                await self.notification.notify(
+                    f"❌ Cannot place order for {symbol}:\n"
+                    f"Position size exceeds limit.\n"
+                    f"Notional value: {final_notional:.2f} USDT\n"
+                    f"Max allowed: {max_position_value:.2f} USDT"
+                )
+                return None
+            
+            # ส่งข้อมูลการวิเคราะห์
+            analysis_notes = coin_recommendations.get('recommendations', {}).get('notes', [])
+            if analysis_notes:
+                await self.notification.notify(
+                    f"📊 การวิเคราะห์ {symbol}:\n" + "\n".join(analysis_notes[:3])
+                )
+            
+            logger.info(f"✅ Final position size for {symbol}: {quantity} (Price: {current_price}, Notional: {final_notional:.2f} USDT, Margin: {final_margin:.2f} USDT)")
+            return quantity
             
         except Exception as e:
             logger.error(f"Error calculating position size: {str(e)}")
