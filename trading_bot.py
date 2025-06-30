@@ -13,6 +13,8 @@ import json
 import os
 from coin_analysis import CoinAnalyzer
 from typing import Dict
+from binance.enums import SIDE_BUY, SIDE_SELL, FUTURE_ORDER_TYPE_MARKET
+import sys
 
 class TradingBot:
     def __init__(self):
@@ -29,11 +31,29 @@ class TradingBot:
         self.analysis_interval = 3600  # 1 hour
 
     def setup_logging(self):
+        """Configure Loguru for clear, color-coded console logs and tidy file logs."""
+        # Remove default handler to avoid duplicate outputs
+        logger.remove()
+
+        # Console – colorized for quick scan
+        console_format = (
+            "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
+            "<level>{level: <8}</level> | "
+            "{message}"
+        )
+
+        # File – plain text, same columns (without color codes)
+        file_format = "{time:YYYY-MM-DD HH:mm:ss} | {level: <8} | {message}"
+
+        # Add handlers
+        logger.add(sys.stdout, format=console_format, colorize=True, level=config.LOG_LEVEL)
         logger.add(
             config.LOG_FILE,
-            rotation="1 day",
+            format=file_format,
+            rotation="5 MB",
             retention="7 days",
-            level=config.LOG_LEVEL
+            encoding="utf-8",
+            level=config.LOG_LEVEL,
         )
 
     async def safe_api_call(self, api_func, *args, max_retries=5, delay=0.5, **kwargs):
@@ -234,27 +254,37 @@ class TradingBot:
             return None
 
     def check_momentum_signal(self, df):
-        """Check momentum signal for additional confirmation"""
+        """Improved momentum signal – returns BUY / SELL / None
+        Conditions (example):
+        • Price momentum > 0.3 % and volume spike and positive RSI momentum → BUY
+        • Price momentum < −0.3 % and volume spike and negative RSI momentum → SELL
+        Otherwise → None
+        """
         try:
-            # Price momentum (current price vs previous)
             current_price = float(df['close'].iloc[-1])
             prev_price = float(df['close'].iloc[-2])
             price_momentum = (current_price - prev_price) / prev_price * 100
-            
-            # Volume confirmation
+
             current_volume = float(df['volume'].iloc[-1])
             avg_volume = float(df['volume_sma20'].iloc[-1])
             volume_spike = current_volume > avg_volume * 1.5
-            
-            # RSI momentum
+
             current_rsi = float(df['rsi'].iloc[-1])
             prev_rsi = float(df['rsi'].iloc[-2])
             rsi_momentum = current_rsi - prev_rsi
-            
-            return price_momentum, volume_spike, rsi_momentum
+
+            # Thresholds – you can fine-tune in config later
+            pct_threshold = 0.3  # 0.3 % intrabar move
+            rsi_threshold = 1.0
+
+            if price_momentum > pct_threshold and volume_spike and rsi_momentum > rsi_threshold:
+                return "BUY"
+            elif price_momentum < -pct_threshold and volume_spike and rsi_momentum < -rsi_threshold:
+                return "SELL"
+            return None
         except (ValueError, TypeError, IndexError) as e:
             logger.warning(f"Error in momentum signal calculation: {e}")
-            return 0.0, False, 0.0
+            return None
 
     def check_fibonacci_rsi_signal(self, df):
         """Check Fibonacci RSI signal"""
@@ -1074,106 +1104,65 @@ class TradingBot:
                 # ดำเนินการต่อแม้จะไม่สามารถตรวจสอบ margin ได้
             
             # ตรวจสอบสัญญาณต่างๆ
-            signals = []
-            
-            # MACD Trend Signal
-            if self.check_macd_trend_signal(df):
-                signals.append("MACD Trend")
-            
-            # Bollinger RSI Signal
-            if self.check_bollinger_rsi_signal(df, current_price):
-                signals.append("Bollinger RSI")
-            
-            # Stochastic Williams Signal
-            if self.check_stochastic_williams_signal(df):
-                signals.append("Stochastic Williams")
-            
-            # Momentum Signal
-            if self.check_momentum_signal(df):
-                signals.append("Momentum")
-            
-            # Fibonacci RSI Signal
-            if self.check_fibonacci_rsi_signal(df):
-                signals.append("Fibonacci RSI")
-            
-            # Parabolic SAR ADX Signal
-            if self.check_parabolic_sar_adx_signal(df):
-                signals.append("Parabolic SAR ADX")
-            
-            # Keltner CCI Signal
-            if self.check_keltner_cci_signal(df):
-                signals.append("Keltner CCI")
-            
-            # Pivot Points RSI Signal
-            if self.check_pivot_points_rsi_signal(df):
-                signals.append("Pivot Points RSI")
-            
-            # Money Flow Volume Signal
-            if self.check_money_flow_volume_signal(df):
-                signals.append("Money Flow Volume")
-            
-            # ATR Moving Average Signal
-            if self.check_atr_moving_average_signal(df):
-                signals.append("ATR Moving Average")
-            
-            # RVI Stochastic Signal
-            if self.check_rvi_stochastic_signal(df):
-                signals.append("RVI Stochastic")
-            
-            # CCI Bollinger Signal
-            if self.check_cci_bollinger_signal(df):
-                signals.append("CCI Bollinger")
-            
-            # OBV Price Action Signal
-            if self.check_obv_price_action_signal(df):
-                signals.append("OBV Price Action")
-            
-            # Chaikin Money Flow MACD Signal
-            if self.check_chaikin_money_flow_macd_signal(df):
-                signals.append("Chaikin Money Flow MACD")
-            
-            # ROC Moving Average Crossover Signal
-            if self.check_roc_moving_average_crossover_signal(df):
-                signals.append("ROC Moving Average Crossover")
-            
-            # Emergency Signal
-            if self.check_emergency_signal(df):
-                signals.append("Emergency")
-            
-            # Strong Trend Signal
-            if self.check_strong_trend_signal(df):
-                signals.append("Strong Trend")
-            
-            # Breakout Signal
-            if self.check_breakout_signal(df):
-                signals.append("Breakout")
-            
-            # Momentum Acceleration Signal
-            if self.check_momentum_acceleration_signal(df):
-                signals.append("Momentum Acceleration")
-            
+            signals = []  # signal names for logging
+            directions = []  # BUY / SELL list for consensus analysis
+
+            # Helper to append
+            def _add_signal(res, name):
+                if res == "BUY":
+                    signals.append(f"{name} (BUY)")
+                    directions.append("BUY")
+                elif res == "SELL":
+                    signals.append(f"{name} (SELL)")
+                    directions.append("SELL")
+
+            # Evaluate indicators
+            _add_signal(self.check_macd_trend_signal(df), "MACD Trend")
+            _add_signal(self.check_bollinger_rsi_signal(df, current_price), "Bollinger RSI")
+            _add_signal(self.check_stochastic_williams_signal(df), "Stochastic Williams")
+            _add_signal(self.check_momentum_signal(df), "Momentum")
+            _add_signal(self.check_fibonacci_rsi_signal(df), "Fibonacci RSI")
+            _add_signal(self.check_parabolic_sar_adx_signal(df), "Parabolic SAR ADX")
+            _add_signal(self.check_keltner_cci_signal(df), "Keltner CCI")
+            _add_signal(self.check_pivot_points_rsi_signal(df), "Pivot Points RSI")
+            _add_signal(self.check_money_flow_volume_signal(df), "Money Flow Volume")
+            _add_signal(self.check_atr_moving_average_signal(df), "ATR Moving Average")
+            _add_signal(self.check_rvi_stochastic_signal(df), "RVI Stochastic")
+            _add_signal(self.check_cci_bollinger_signal(df), "CCI Bollinger")
+            _add_signal(self.check_obv_price_action_signal(df), "OBV Price Action")
+            _add_signal(self.check_chaikin_money_flow_macd_signal(df), "Chaikin Money Flow MACD")
+            _add_signal(self.check_roc_moving_average_crossover_signal(df), "ROC MA Crossover")
+            _add_signal(self.check_emergency_signal(df), "Emergency")
+            _add_signal(self.check_strong_trend_signal(df), "Strong Trend")
+            _add_signal(self.check_breakout_signal(df), "Breakout")
+            _add_signal(self.check_momentum_acceleration_signal(df), "Momentum Acceleration")
+
             # ส่งข้อมูล technical indicators
             await self.send_technical_indicators(symbol, current_price, current_rsi)
-            
-            # ตรวจสอบสัญญาณและทำการเทรด
-            if len(signals) >= 2:  # ต้องมีสัญญาณอย่างน้อย 2 ตัว
-                logger.info(f"Multiple signals detected for {symbol}: {', '.join(signals)}")
-                
-                # ตรวจสอบว่าไม่มี position อยู่แล้ว
+
+            buy_count = directions.count("BUY")
+            sell_count = directions.count("SELL")
+            consensus_threshold = 3  # require 3 aligned signals
+            trade_direction = None
+            if buy_count >= consensus_threshold and sell_count == 0:
+                trade_direction = "BUY"
+            elif sell_count >= consensus_threshold and buy_count == 0:
+                trade_direction = "SELL"
+
+            if trade_direction:
+                logger.info(
+                    f"Consensus of {consensus_threshold}+ signals for {symbol}: {', '.join(signals)} → {trade_direction} (awaiting multi-TF confirmation)")
                 if symbol not in self.active_trades:
-                    # ตรวจสอบ balance อีกครั้งก่อนวาง order
-                    if available_balance >= 5:  # ขั้นต่ำ 5 USDT
-                        await self.place_order(symbol, SIDE_BUY, 0)  # ใช้ 0 เพื่อให้ calculate_position_size คำนวณ
+                    if available_balance >= 5:
+                        side = SIDE_BUY if trade_direction == "BUY" else SIDE_SELL
+                        await self.place_order(symbol, side, 0)
                     else:
                         logger.warning(f"Insufficient balance for {symbol}: {available_balance} USDT")
                 else:
                     logger.info(f"Position already exists for {symbol}")
-            elif len(signals) == 1:
-                logger.info(f"Single signal detected for {symbol}: {signals[0]}")
-                # สำหรับสัญญาณเดียว อาจจะไม่เทรด หรือใช้เงื่อนไขพิเศษ
             else:
-                logger.debug(f"No signals detected for {symbol}")
-                
+                logger.debug(f"No consensus signal for {symbol}. Signals: {signals}")
+
             # --- INTEGRATE MULTI-TIMEFRAME SIGNAL CONFIRMATION ---
             # ดึงข้อมูลแต่ละไทม์เฟรม (ลบ 1m, 5m ออก)
             timeframes = ['15m', '1h', '4h', '1d']
@@ -1208,14 +1197,19 @@ class TradingBot:
             confirmed_signal = self.coin_analyzer.confirm_signal_across_timeframes(tf_signals, min_confirm=2)
             if confirmed_signal:
                 logger.info(f"[Multi-TF] Confirmed signal for {symbol}: {confirmed_signal.upper()} ({tf_signals})")
-                if symbol not in self.active_trades:
-                    if available_balance >= 5:
-                        side = SIDE_BUY if confirmed_signal == 'buy' else SIDE_SELL
-                        await self.place_order(symbol, side, 0)
-                    else:
-                        logger.warning(f"Insufficient balance for {symbol}: {available_balance} USDT")
+
+                # ต้องให้สัญญาณ TF และ consensus ตรงกัน เพื่อเพิ่มความแม่นยำ
+                if trade_direction and trade_direction != confirmed_signal.upper():
+                    logger.info(f"Signal mismatch (Consensus={trade_direction}, Multi-TF={confirmed_signal.upper()}) → Skip trade")
                 else:
-                    logger.info(f"Position already exists for {symbol}")
+                    final_side = SIDE_BUY if confirmed_signal == 'buy' else SIDE_SELL
+                    if symbol not in self.active_trades:
+                        if available_balance >= 5:
+                            await self.place_order(symbol, final_side, 0)
+                        else:
+                            logger.warning(f"Insufficient balance for {symbol}: {available_balance} USDT")
+                    else:
+                        logger.info(f"Position already exists for {symbol}")
             else:
                 logger.info(f"[Multi-TF] No confirmed signal for {symbol} (signals: {tf_signals})")
             # --- END MULTI-TIMEFRAME SIGNAL CONFIRMATION ---
@@ -1588,11 +1582,6 @@ class TradingBot:
                 'entry_price': entry_price,
                 'position_side': position_side,
                 'quantity': quantity,
-                'trailing_stop': self.calculate_trailing_stop(
-                    entry_price,
-                    entry_price,
-                    position_side
-                ),
                 'pnl': 0
             }
             self.save_status()
@@ -1706,7 +1695,6 @@ class TradingBot:
                 "Side": trade.get("position_side"),
                 "Entry": trade.get("entry_price"),
                 "Quantity": trade.get("quantity"),
-                "TrailingStop": trade.get("trailing_stop"),
             })
         with open("active_trades.json", "w") as f:
             json.dump(trades, f)
