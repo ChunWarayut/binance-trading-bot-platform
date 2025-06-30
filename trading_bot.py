@@ -100,18 +100,54 @@ class TradingBot:
     async def initialize(self):
         for symbol in config.TRADING_PAIRS:
             try:
+                # First check if the symbol exists and is available for futures trading
+                try:
+                    exchange_info = await self.safe_api_call(self.client.futures_exchange_info)
+                    symbol_info = None
+                    for s in exchange_info['symbols']:
+                        if s['symbol'] == symbol and s['status'] == 'TRADING':
+                            symbol_info = s
+                            break
+                    
+                    if not symbol_info:
+                        logger.warning(f"Symbol {symbol} is not available for futures trading or not in TRADING status")
+                        await self.notification.notify(f"⚠️ Symbol {symbol} not available for futures trading")
+                        continue
+                        
+                except Exception as e:
+                    logger.warning(f"Could not verify symbol {symbol} availability: {e}")
+                    # Continue with leverage setting attempt
+                
+                # Set leverage
                 await self.safe_api_call(self.client.futures_change_leverage, symbol=symbol, leverage=config.LEVERAGE)
                 logger.info(f"Set leverage for {symbol} to {config.LEVERAGE}x")
-                ticker = await self.safe_api_call(self.client.futures_symbol_ticker, symbol=symbol)
-                logger.info(f"Current price for {symbol}: {ticker['price']}")
-                await self.notification.notify(
-                    f"✅ Initialized {symbol}\n"
-                    f"Leverage: {config.LEVERAGE}x\n"
-                    f"Current Price: {ticker['price']}"
-                )
+                
+                # Get current price
+                try:
+                    ticker = await self.safe_api_call(self.client.futures_symbol_ticker, symbol=symbol)
+                    current_price = ticker['price']
+                    logger.info(f"Current price for {symbol}: {current_price}")
+                    
+                    await self.notification.notify(
+                        f"✅ Initialized {symbol}\n"
+                        f"Leverage: {config.LEVERAGE}x\n"
+                        f"Current Price: {current_price}"
+                    )
+                except Exception as price_error:
+                    logger.error(f"Failed to get price for {symbol}: {str(price_error)}")
+                    await self.notification.notify(
+                        f"⚠️ Initialized {symbol} with leverage {config.LEVERAGE}x\n"
+                        f"⚠️ Could not get current price: {str(price_error)}"
+                    )
+                    
             except Exception as e:
-                logger.error(f"Failed to set leverage for {symbol}: {str(e)}")
-                await self.notification.notify(f"❌ Failed to initialize {symbol}: {str(e)}")
+                error_msg = str(e)
+                if "does not exist" in error_msg or "symbol" in error_msg.lower():
+                    logger.warning(f"Symbol {symbol} may not be available for futures trading: {error_msg}")
+                    await self.notification.notify(f"⚠️ Symbol {symbol} not available: {error_msg}")
+                else:
+                    logger.error(f"Failed to set leverage for {symbol}: {error_msg}")
+                    await self.notification.notify(f"❌ Failed to initialize {symbol}: {error_msg}")
 
     def send_heartbeat(self):
         current_time = time.time()
@@ -1186,6 +1222,10 @@ class TradingBot:
                     df_tf['high'] = pd.to_numeric(df_tf['high'])
                     df_tf['low'] = pd.to_numeric(df_tf['low'])
                     df_tf['volume'] = pd.to_numeric(df_tf['volume'])
+                    
+                    # Calculate indicators for this timeframe
+                    df_tf = self.calculate_indicators(df_tf)
+                    
                     # ใช้ MACD trend signal เป็นตัวอย่าง (คุณสามารถรวม logic อื่นๆ ได้)
                     signal = self.check_macd_trend_signal(df_tf)
                     if signal:
@@ -1193,8 +1233,9 @@ class TradingBot:
                 except Exception as e:
                     logger.warning(f"Error getting signal for {symbol} {tf}: {e}")
                     continue
-            # ใช้ฟังก์ชัน confirm_signal_across_timeframes จาก coin_analyzer
-            confirmed_signal = self.coin_analyzer.confirm_signal_across_timeframes(tf_signals, min_confirm=2)
+            
+            # Simple signal confirmation logic
+            confirmed_signal = self.confirm_signal_across_timeframes(tf_signals, min_confirm=2)
             if confirmed_signal:
                 logger.info(f"[Multi-TF] Confirmed signal for {symbol}: {confirmed_signal.upper()} ({tf_signals})")
 
@@ -1701,4 +1742,23 @@ class TradingBot:
 
     def calculate_total_pnl(self):
         # This is a placeholder. You can implement real P&L calculation if you store trade history.
-        return sum([trade.get("pnl", 0) for trade in self.active_trades.values()]) 
+        return 0.0
+
+    def confirm_signal_across_timeframes(self, tf_signals, min_confirm=2):
+        """
+        Confirm signal across multiple timeframes
+        Returns 'buy', 'sell', or None
+        """
+        if not tf_signals:
+            return None
+        
+        buy_count = sum(1 for signal in tf_signals.values() if signal == 'buy')
+        sell_count = sum(1 for signal in tf_signals.values() if signal == 'sell')
+        
+        # Require minimum confirmation
+        if buy_count >= min_confirm and sell_count == 0:
+            return 'buy'
+        elif sell_count >= min_confirm and buy_count == 0:
+            return 'sell'
+        
+        return None
