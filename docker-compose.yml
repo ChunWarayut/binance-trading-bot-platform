@@ -7,6 +7,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./logs:/app/logs
+      - ./bot_config.json:/app/bot_config.json
     env_file:
       - .env
     environment:
