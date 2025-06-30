@@ -1,3 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.so
+.venv/
+venv/
+ENV/
+env/
+
+# Temporary files
+*.tmp
+*.temp
+*_temp.*
+*_test.json
+*_check.json
+*_status.json
+*_summary.json
+*_output.txt
+*_log.json
+debug_*.json
+test_*.json
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
 # Logs
 logs
 *.log

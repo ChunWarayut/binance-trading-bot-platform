@@ -1,9 +1,0 @@
-{
-  "python_version": "3.10.12 (main, May 27 2025, 17:12:29) [GCC 11.4.0]",
-  "python_executable": "/usr/bin/python3",
-  "imports": {
-    "telegram": true,
-    "fastapi": true,
-    "streamlit": false
-  }
-}

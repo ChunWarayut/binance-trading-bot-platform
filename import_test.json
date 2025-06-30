@@ -1,7 +1,0 @@
-{
-  "telegram": false,
-  "fastapi": false,
-  "streamlit": false,
-  "binance": true,
-  "pandas": true
-}
