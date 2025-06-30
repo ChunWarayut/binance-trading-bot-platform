@@ -15,6 +15,7 @@ from coin_analysis import CoinAnalyzer
 from typing import Dict
 from binance.enums import SIDE_BUY, SIDE_SELL, FUTURE_ORDER_TYPE_MARKET
 import sys
+from datetime import datetime
 
 class TradingBot:
     def __init__(self):
@@ -29,6 +30,13 @@ class TradingBot:
         self.coin_analyses = {}
         self.last_analysis_time = 0
         self.analysis_interval = 3600  # 1 hour
+        
+        # Risk Management Variables
+        self.daily_pnl = 0.0
+        self.daily_trades_count = 0
+        self.last_trade_date = None
+        self.circuit_breaker_triggered = False
+        self.initial_balance = None
 
     def setup_logging(self):
         """Configure Loguru for clear, color-coded console logs and tidy file logs."""
@@ -1307,11 +1315,22 @@ class TradingBot:
             available_balance = float(account['availableBalance'])
             unrealized_profit = float(account['totalUnrealizedProfit'])
             margin_balance = float(account['totalMarginBalance'])
+            
+            # Set initial balance for risk management if not set
+            if self.initial_balance is None:
+                self.initial_balance = self.account_balance
+                logger.info(f"💰 Initial balance set for risk management: {self.initial_balance:.2f} USDT")
+            
             logger.info("Detailed Balance Information:")
             logger.info(f"Total Wallet Balance: {self.account_balance} USDT")
             logger.info(f"Available Balance: {available_balance} USDT")
             logger.info(f"Unrealized Profit: {unrealized_profit} USDT")
             logger.info(f"Margin Balance: {margin_balance} USDT")
+            
+            # Check risk limits
+            if config.CIRCUIT_BREAKER_ENABLED:
+                self.check_risk_limits()
+            
             if self.account_balance <= 0:
                 logger.warning("Account balance is 0 or negative. Please deposit funds to your futures account.")
                 asyncio.create_task(self.notification.notify(
@@ -1527,6 +1546,12 @@ class TradingBot:
 
     async def place_order(self, symbol, side, quantity):
         try:
+            # Check circuit breaker first
+            if config.CIRCUIT_BREAKER_ENABLED and self.circuit_breaker_triggered:
+                logger.warning(f"🚨 Cannot place order for {symbol}: Circuit breaker is active")
+                await self.notification.notify(f"🚨 Trading stopped: Circuit breaker is active")
+                return None
+            
             ticker = await self.safe_api_call(self.client.futures_symbol_ticker, symbol=symbol)
             current_price = float(ticker['price'])
             
@@ -1534,7 +1559,7 @@ class TradingBot:
             await self.update_account_balance()
             if self.account_balance is None:
                 await self.notification.notify(f"❌ Cannot place order for {symbol}: Account balance is None")
-                return
+                return None
             
             account = await self.safe_api_call(self.client.futures_account)
             available_balance = float(account['availableBalance'])
@@ -1544,7 +1569,7 @@ class TradingBot:
                     f"❌ Cannot place order for {symbol}:\n"
                     f"Insufficient available balance: {available_balance} USDT"
                 )
-                return
+                return None
             
             # คำนวณ position size ด้วย aggressive leverage
             calculated_quantity = await self.calculate_position_size(symbol, current_price)
@@ -1556,7 +1581,7 @@ class TradingBot:
                     f"Current price: {current_price} USDT\n"
                     f"Available balance: {available_balance:.2f} USDT"
                 )
-                return
+                return None
             
             # ใช้ quantity ที่คำนวณได้ (ถ้า quantity parameter เป็น 0 ให้ใช้ calculated_quantity)
             if quantity <= 0:
@@ -1570,10 +1595,21 @@ class TradingBot:
                     f"Minimum order size: 20 USDT\n"
                     f"Current price: {current_price} USDT"
                 )
-                return
+                return None
             
             # ตรวจสอบ notional value
             notional_value = quantity * current_price
+            
+            # Check position size limit
+            if not self.check_position_size_limit(notional_value, available_balance):
+                await self.notification.notify(
+                    f"❌ Cannot place order for {symbol}:\n"
+                    f"Position size exceeds limit.\n"
+                    f"Notional value: {notional_value:.2f} USDT\n"
+                    f"Max allowed: {available_balance * config.MAX_POSITION_SIZE:.2f} USDT"
+                )
+                return None
+            
             if notional_value < 20.0:
                 await self.notification.notify(
                     f"❌ Cannot place order for {symbol}:\n"
@@ -1581,7 +1617,7 @@ class TradingBot:
                     f"Current notional value: {notional_value:.2f} USDT\n"
                     f"Minimum required: 20 USDT"
                 )
-                return
+                return None
             
             # ตรวจสอบ margin อีกครั้งก่อนวาง order
             try:
@@ -1600,7 +1636,7 @@ class TradingBot:
                         f"Notional value: {notional_value:.2f} USDT\n"
                         f"Leverage: {current_leverage}x"
                     )
-                    return
+                    return None
                 
                 logger.info(f"✅ Margin check passed for {symbol}: Required={required_margin:.2f} USDT, Available={available_balance:.2f} USDT")
                 
@@ -1616,6 +1652,10 @@ class TradingBot:
                 type=FUTURE_ORDER_TYPE_MARKET,
                 quantity=quantity
             )
+            
+            # Update daily trade count
+            self.daily_trades_count += 1
+            logger.info(f"📊 Daily trades: {self.daily_trades_count}/{config.MAX_DAILY_TRADES}")
             
             entry_price = float(order['avgPrice'])
             position_side = "LONG" if side == SIDE_BUY else "SHORT"
@@ -1638,7 +1678,8 @@ class TradingBot:
                 f"✅ New {position_side} position opened for {symbol}\n"
                 f"Entry Price: {entry_price}\n"
                 f"Quantity: {quantity}\n"
-                f"Notional Value: {notional_value:.2f} USDT"
+                f"Notional Value: {notional_value:.2f} USDT\n"
+                f"Daily Trades: {self.daily_trades_count}/{config.MAX_DAILY_TRADES}"
             )
             logger.info(f"Order placed successfully: {order}")
             return order
@@ -1662,24 +1703,32 @@ class TradingBot:
             pnl = (current_price - trade['entry_price']) * trade['quantity']
             if trade['position_side'] == "SHORT":
                 pnl = -pnl
-            trade['pnl'] = pnl
-            await self.notification.notify(
-                f"Position closed for {symbol}\n"
-                f"Exit Price: {current_price}\n"
-                f"P&L: {pnl:.2f} USDT"
-            )
-            self.log_trade_activity(
-                event="Position Closed",
-                symbol=symbol,
-                side=trade['position_side'],
-                price=current_price,
-                pnl=pnl,
-                order_id=order.get('orderId'),
-                reason="Manual"
-            )
-            del self.active_trades[symbol]
-            self.save_status()
-            logger.info(f"Position closed successfully: {order}")
+            
+            # Update daily PnL
+            if self.update_daily_pnl(pnl):
+                trade['pnl'] = pnl
+                await self.notification.notify(
+                    f"Position closed for {symbol}\n"
+                    f"Exit Price: {current_price}\n"
+                    f"P&L: {pnl:.2f} USDT\n"
+                    f"Daily P&L: {self.daily_pnl:.2f} USDT"
+                )
+                self.log_trade_activity(
+                    event="Position Closed",
+                    symbol=symbol,
+                    side=trade['position_side'],
+                    price=current_price,
+                    pnl=pnl,
+                    order_id=order.get('orderId'),
+                    reason="Manual"
+                )
+                del self.active_trades[symbol]
+                self.save_status()
+                logger.info(f"Position closed successfully: {order}")
+            else:
+                logger.warning(f"🚨 Position closed but trading stopped due to risk limits")
+                await self.notification.notify(f"🚨 Position closed but trading stopped due to risk limits")
+                
         except Exception as e:
             logger.error(f"Failed to close position: {str(e)}")
             await self.notification.notify(f"Failed to close position: {str(e)}")
@@ -1762,3 +1811,87 @@ class TradingBot:
             return 'sell'
         
         return None
+
+    def check_risk_limits(self):
+        """
+        Check if trading should be stopped due to risk limits
+        Returns True if trading should be stopped
+        """
+        try:
+            # Reset daily counters if it's a new day
+            current_date = datetime.now().date()
+            if self.last_trade_date != current_date:
+                self.daily_pnl = 0.0
+                self.daily_trades_count = 0
+                self.last_trade_date = current_date
+                self.circuit_breaker_triggered = False
+                logger.info("🔄 New trading day - resetting daily counters")
+            
+            # Check daily loss limit
+            if self.initial_balance and self.daily_pnl < -(self.initial_balance * config.DAILY_LOSS_LIMIT):
+                if not self.circuit_breaker_triggered:
+                    self.circuit_breaker_triggered = True
+                    logger.warning(f"🚨 CIRCUIT BREAKER: Daily loss limit exceeded! PnL: {self.daily_pnl:.2f} USDT")
+                    asyncio.create_task(self.notification.notify(
+                        f"🚨 CIRCUIT BREAKER ACTIVATED\n"
+                        f"Daily Loss Limit: {config.DAILY_LOSS_LIMIT * 100}%\n"
+                        f"Current PnL: {self.daily_pnl:.2f} USDT\n"
+                        f"Trading stopped for safety"
+                    ))
+                return True
+            
+            # Check daily trade limit
+            if self.daily_trades_count >= config.MAX_DAILY_TRADES:
+                if not self.circuit_breaker_triggered:
+                    self.circuit_breaker_triggered = True
+                    logger.warning(f"🚨 CIRCUIT BREAKER: Daily trade limit exceeded! Trades: {self.daily_trades_count}")
+                    asyncio.create_task(self.notification.notify(
+                        f"🚨 CIRCUIT BREAKER ACTIVATED\n"
+                        f"Daily Trade Limit: {config.MAX_DAILY_TRADES}\n"
+                        f"Current Trades: {self.daily_trades_count}\n"
+                        f"Trading stopped for safety"
+                    ))
+                return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"Error in risk limit check: {e}")
+            return True  # Stop trading if error occurs
+    
+    def update_daily_pnl(self, pnl_change):
+        """
+        Update daily PnL and check risk limits
+        """
+        try:
+            self.daily_pnl += pnl_change
+            logger.info(f"📊 Daily PnL updated: {self.daily_pnl:.2f} USDT (change: {pnl_change:.2f})")
+            
+            # Check if we should stop trading
+            if self.check_risk_limits():
+                logger.warning("🛑 Trading stopped due to risk limits")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error updating daily PnL: {e}")
+            return False
+    
+    def check_position_size_limit(self, position_value, available_balance):
+        """
+        Check if position size exceeds limits
+        Returns True if position is within limits
+        """
+        try:
+            max_position_value = available_balance * config.MAX_POSITION_SIZE
+            
+            if position_value > max_position_value:
+                logger.warning(f"⚠️ Position size limit exceeded: {position_value:.2f} > {max_position_value:.2f} USDT")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error checking position size limit: {e}")
+            return False
