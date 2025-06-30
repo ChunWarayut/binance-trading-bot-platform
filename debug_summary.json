@@ -1,0 +1,43 @@
+{
+  "test_timestamp": "2025-06-30 18:06:56.757507",
+  "python_version": "3.11.13 (main, Jun 10 2025, 23:54:42) [GCC 12.2.0]",
+  "working_directory": "/workspace",
+  "files_checked": [
+    "run_all_tests.py",
+    "manual_test_backtest.py",
+    "test_coin_analysis.py",
+    "debug_bot.py",
+    "performance_analyzer.py",
+    "emergency_runner.py",
+    "notifications.py",
+    "quick_winrate_test.py",
+    "config.py",
+    "simple_backtest_test.py",
+    "win_rate_optimizer.py",
+    "run_coin_analysis.py",
+    "status_api.py",
+    "test_symbol_availability.py",
+    "test_backtest_fix.py",
+    "quick_start.py",
+    "main.py",
+    "coin_analysis_api.py",
+    "trading_bot.py",
+    "web_ui.py",
+    "test_btc_leverage.py",
+    "backtest.py",
+    "error_checker.py",
+    "test_min_notional.py",
+    "test_enhanced_strategies.py",
+    "test_multi_tf_analysis.py",
+    "live_dashboard.py",
+    "test_margin_fix.py",
+    "coin_analysis.py",
+    "fix_errors.py"
+  ],
+  "recommendations": [
+    "\u0e2b\u0e32\u0e01\u0e21\u0e35 Import Error: pip install -r requirements.txt",
+    "\u0e2b\u0e32\u0e01\u0e21\u0e35 Permission Error: chmod +r *.py",
+    "\u0e2b\u0e32\u0e01\u0e21\u0e35 JSON Error: \u0e15\u0e23\u0e27\u0e08\u0e2a\u0e2d\u0e1a syntax \u0e43\u0e19\u0e44\u0e1f\u0e25\u0e4c config",
+    "\u0e2b\u0e32\u0e01 Terminal \u0e44\u0e21\u0e48\u0e17\u0e33\u0e07\u0e32\u0e19: \u0e43\u0e0a\u0e49 Docker"
+  ]
+}

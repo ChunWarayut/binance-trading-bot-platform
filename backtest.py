@@ -191,32 +191,74 @@ class BacktestEngine:
             signals['bb_rsi'] = self.trading_bot.check_bollinger_rsi_signal(df, current_price)
             signals['stoch_williams'] = self.trading_bot.check_stochastic_williams_signal(df)
             
-            # New strategies
-            signals['fib_rsi'] = self.trading_bot.check_fibonacci_rsi_signal(df)
-            signals['parabolic_sar_adx'] = self.trading_bot.check_parabolic_sar_adx_signal(df)
-            signals['keltner_cci'] = self.trading_bot.check_keltner_cci_signal(df)
-            signals['pivot_points_rsi'] = self.trading_bot.check_pivot_points_rsi_signal(df)
-            signals['money_flow_volume'] = self.trading_bot.check_money_flow_volume_signal(df)
-            signals['atr_moving_average'] = self.trading_bot.check_atr_moving_average_signal(df)
-            signals['rvi_stochastic'] = self.trading_bot.check_rvi_stochastic_signal(df)
-            signals['cci_bollinger'] = self.trading_bot.check_cci_bollinger_signal(df)
-            signals['obv_price_action'] = self.trading_bot.check_obv_price_action_signal(df)
-            signals['chaikin_money_flow_macd'] = self.trading_bot.check_chaikin_money_flow_macd_signal(df)
-            signals['roc_moving_average_crossover'] = self.trading_bot.check_roc_moving_average_crossover_signal(df)
+            # Handle momentum signal which returns tuple
+            try:
+                momentum_result = self.trading_bot.check_momentum_signal(df)
+                if isinstance(momentum_result, tuple) and len(momentum_result) == 3:
+                    price_momentum, volume_spike, rsi_momentum = momentum_result
+                    # Simplified momentum decision
+                    if price_momentum and price_momentum > 1.5 and volume_spike and rsi_momentum and rsi_momentum > 8:
+                        signals['momentum'] = "BUY"
+                    elif price_momentum and price_momentum < -1.5 and volume_spike and rsi_momentum and rsi_momentum < -8:
+                        signals['momentum'] = "SELL"
+                    else:
+                        signals['momentum'] = None
+                else:
+                    signals['momentum'] = None
+            except:
+                signals['momentum'] = None
+            
+            # Enhanced strategies (if they exist)
+            try:
+                signals['fibonacci_rsi'] = self.trading_bot.check_fibonacci_rsi_signal(df)
+            except AttributeError:
+                signals['fibonacci_rsi'] = None
+                
+            try:
+                signals['parabolic_sar_adx'] = self.trading_bot.check_parabolic_sar_adx_signal(df)
+            except AttributeError:
+                signals['parabolic_sar_adx'] = None
+                
+            try:
+                signals['volume_profile'] = self.trading_bot.check_volume_profile_signal(df)
+            except AttributeError:
+                signals['volume_profile'] = None
+                
+            try:
+                signals['market_structure'] = self.trading_bot.check_market_structure_signal(df)
+            except AttributeError:
+                signals['market_structure'] = None
+                
+            try:
+                signals['order_flow'] = self.trading_bot.check_order_flow_signal(df)
+            except AttributeError:
+                signals['order_flow'] = None
+                
+            try:
+                signals['chaikin_money_flow_macd'] = self.trading_bot.check_chaikin_money_flow_macd_signal(df)
+            except AttributeError:
+                signals['chaikin_money_flow_macd'] = None
             
             # Priority signals
-            signals['emergency'] = self.trading_bot.check_emergency_signal(df)
-            signals['strong_trend'] = self.trading_bot.check_strong_trend_signal(df)
-            signals['breakout'] = self.trading_bot.check_breakout_signal(df)
-            signals['momentum_acceleration'] = self.trading_bot.check_momentum_acceleration_signal(df)
-            
-            # Momentum signals
-            price_momentum, volume_spike, rsi_momentum = self.trading_bot.check_momentum_signal(df)
-            signals['momentum'] = {
-                'price_momentum': price_momentum,
-                'volume_spike': volume_spike,
-                'rsi_momentum': rsi_momentum
-            }
+            try:
+                signals['emergency'] = self.trading_bot.check_emergency_signal(df)
+            except AttributeError:
+                signals['emergency'] = None
+                
+            try:
+                signals['strong_trend'] = self.trading_bot.check_strong_trend_signal(df)
+            except AttributeError:
+                signals['strong_trend'] = None
+                
+            try:
+                signals['breakout'] = self.trading_bot.check_breakout_signal(df)
+            except AttributeError:
+                signals['breakout'] = None
+                
+            try:
+                signals['momentum_acceleration'] = self.trading_bot.check_momentum_acceleration_signal(df)
+            except AttributeError:
+                signals['momentum_acceleration'] = None
             
             return signals
             
@@ -238,10 +280,8 @@ class BacktestEngine:
             
             # Check regular consensus signals
             regular_signals = [
-                'macd_trend', 'bb_rsi', 'stoch_williams', 'fib_rsi', 'parabolic_sar_adx',
-                'keltner_cci', 'pivot_points_rsi', 'money_flow_volume', 'atr_moving_average',
-                'rvi_stochastic', 'cci_bollinger', 'obv_price_action', 
-                'chaikin_money_flow_macd', 'roc_moving_average_crossover'
+                'macd_trend', 'bb_rsi', 'stoch_williams', 'fibonacci_rsi', 'parabolic_sar_adx',
+                'volume_profile', 'market_structure', 'order_flow', 'chaikin_money_flow_macd'
             ]
             
             buy_signals = sum([1 for signal in regular_signals if signals.get(signal) == "BUY"])
@@ -261,16 +301,12 @@ class BacktestEngine:
             weighted_sell = (original_sell * 3) + new_sell
             
             # Check momentum conditions
-            momentum = signals.get('momentum', {})
+            momentum = signals.get('momentum', None)
             strong_buy_momentum = (
-                momentum.get('price_momentum', 0) > 1.5 and 
-                momentum.get('volume_spike', False) and 
-                momentum.get('rsi_momentum', 0) > 8
+                momentum == "BUY"
             )
             strong_sell_momentum = (
-                momentum.get('price_momentum', 0) < -1.5 and 
-                momentum.get('volume_spike', False) and 
-                momentum.get('rsi_momentum', 0) < -8
+                momentum == "SELL"
             )
             
             # Decision logic
@@ -289,11 +325,11 @@ class BacktestEngine:
             elif strong_sell_momentum:
                 return "SELL", "momentum_based"
             
-            return None, None
+            return "NONE", "no_signal"
             
         except Exception as e:
             logger.error(f"Error determining trade signal: {e}")
-            return None, None
+            return "NONE", "error"
 
     def execute_trade(self, signal: str, entry_price: float, timestamp: datetime, strategy: str) -> Dict:
         """Execute a trade and return trade details"""
@@ -390,11 +426,11 @@ class BacktestEngine:
                     signal, strategy = self.determine_trade_signal(signals)
                     
                     # Track signal counts
-                    if signal:
+                    if signal and signal != "NONE":
                         self.strategy_signals[strategy] += 1
                     
                     # Execute trades
-                    if signal and current_position is None:
+                    if signal and signal != "NONE" and current_position is None:
                         # Open new position
                         current_trade = self.execute_trade(signal, current_price, current_timestamp, strategy)
                         current_position = signal
@@ -403,9 +439,9 @@ class BacktestEngine:
                         
                     elif current_position and current_trade:
                         # Check exit conditions (simplified - exit after 10 candles or on opposite signal)
-                        candles_held = len(df) - i
+                        candles_held = i - len([t for t in self.trades if t == current_trade])
                         exit_condition = (
-                            (signal and signal != current_position) or  # Opposite signal
+                            (signal and signal != "NONE" and signal != current_position) or  # Opposite signal
                             candles_held >= 10  # Time-based exit
                         )
                         
@@ -599,8 +635,8 @@ async def main():
     try:
         # Initialize backtest engine
         backtest = BacktestEngine(
-            start_date='2025-06-01',
-            end_date='2025-06-27',
+            start_date='2024-01-01',
+            end_date='2025-06-30',
             initial_balance=1000
         )
         
@@ -624,7 +660,7 @@ async def main():
         
         for symbol in symbols:
             logger.info(f"Running backtest for {symbol}")
-            results = await backtest.run_backtest(symbol, interval='3m')
+            results = await backtest.run_backtest(symbol, interval='1h')
             
             if results:
                 # Generate report

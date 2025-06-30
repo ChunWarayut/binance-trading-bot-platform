@@ -1,0 +1,55 @@
+{
+  "strategy_weights": {
+    "MACD Trend": 0.15,
+    "Bollinger RSI": 0.12,
+    "Stochastic Williams": 0.10,
+    "Momentum": 0.08,
+    "Fibonacci RSI": 0.06,
+    "Parabolic SAR ADX": 0.14,
+    "Keltner CCI": 0.09,
+    "Pivot Points RSI": 0.07,
+    "Money Flow Volume": 0.11,
+    "ATR Moving Average": 0.08,
+    "RVI Stochastic": 0.07,
+    "CCI Bollinger": 0.09,
+    "OBV Price Action": 0.08,
+    "Chaikin Money Flow MACD": 0.10,
+    "ROC MA Crossover": 0.08,
+    "Emergency": 0.20,
+    "Strong Trend": 0.16,
+    "Breakout": 0.13,
+    "Momentum Acceleration": 0.12,
+    "Volume Profile": 0.13,
+    "Market Structure": 0.11,
+    "Order Flow": 0.11
+  },
+  "signal_thresholds": {
+    "confidence_threshold": 0.4,
+    "strength_threshold": 50,
+    "consensus_threshold": 3,
+    "min_confirm_timeframes": 2
+  },
+  "volume_analysis": {
+    "volume_spike_threshold": 2.0,
+    "volume_divergence_threshold": 1.5,
+    "price_momentum_threshold": 1.0
+  },
+  "market_structure": {
+    "support_resistance_periods": 20,
+    "distance_threshold": 1.0,
+    "rsi_confirmation": true
+  },
+  "order_flow": {
+    "volume_increase_threshold": 1.2,
+    "body_size_multiplier": 1.5,
+    "candle_analysis_periods": 10
+  },
+  "signal_strength_factors": {
+    "rsi_oversold": 30,
+    "rsi_overbought": 70,
+    "volume_spike_multiplier": 2.0,
+    "volume_confirm_multiplier": 1.5,
+    "stochastic_oversold": 20,
+    "stochastic_overbought": 80
+  }
+} 

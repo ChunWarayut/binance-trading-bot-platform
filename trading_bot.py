@@ -1148,11 +1148,12 @@ class TradingBot:
                 # ดำเนินการต่อแม้จะไม่สามารถตรวจสอบ margin ได้
             
             # ตรวจสอบสัญญาณต่างๆ
-            signals = []  # signal names for logging
-            directions = []  # BUY / SELL list for consensus analysis
-
+            signals_dict_local = {}
+            signals = []
+            directions = []
             # Helper to append
             def _add_signal(res, name):
+                signals_dict_local[name] = res  # Store raw result for weighted analysis
                 if res == "BUY":
                     signals.append(f"{name} (BUY)")
                     directions.append("BUY")
@@ -1180,22 +1181,49 @@ class TradingBot:
             _add_signal(self.check_strong_trend_signal(df), "Strong Trend")
             _add_signal(self.check_breakout_signal(df), "Breakout")
             _add_signal(self.check_momentum_acceleration_signal(df), "Momentum Acceleration")
+            
+            # Advanced Strategies
+            _add_signal(self.check_volume_profile_signal(df), "Volume Profile")
+            _add_signal(self.check_market_structure_signal(df), "Market Structure")
+            _add_signal(self.check_order_flow_signal(df), "Order Flow")
 
             # ส่งข้อมูล technical indicators
             await self.send_technical_indicators(symbol, current_price, current_rsi)
+
+            # Enhanced signal analysis with weighted scoring
+            signals_dict = signals_dict_local.copy()
+
+            # Get weighted signal with confidence score
+            weighted_signal, confidence_score = self.get_weighted_signal(signals_dict)
+            
+            # Calculate signal strength for the weighted signal
+            if weighted_signal:
+                signal_strength = self.calculate_signal_strength(df, weighted_signal)
+                logger.info(f"🎯 Weighted Signal for {symbol}: {weighted_signal} (Confidence: {confidence_score:.2f}, Strength: {signal_strength}/100)")
+            else:
+                signal_strength = 0
 
             buy_count = directions.count("BUY")
             sell_count = directions.count("SELL")
             consensus_threshold = 3  # require 3 aligned signals
             trade_direction = None
-            if buy_count >= consensus_threshold and sell_count == 0:
+            
+            # Use weighted signal if confidence is high enough
+            if weighted_signal and confidence_score > 0.4 and signal_strength > 50:
+                trade_direction = weighted_signal
+                logger.info(f"🚀 Using weighted signal for {symbol}: {weighted_signal} (Confidence: {confidence_score:.2f})")
+            elif buy_count >= consensus_threshold and sell_count == 0:
                 trade_direction = "BUY"
             elif sell_count >= consensus_threshold and buy_count == 0:
                 trade_direction = "SELL"
 
             if trade_direction:
                 logger.info(
-                    f"Consensus of {consensus_threshold}+ signals for {symbol}: {', '.join(signals)} → {trade_direction} (awaiting multi-TF confirmation)")
+                    f"🎯 Final signal for {symbol}: {trade_direction} | "
+                    f"Signals: {', '.join(signals)} | "
+                    f"Confidence: {confidence_score:.2f} | "
+                    f"Strength: {signal_strength}/100")
+                
                 if symbol not in self.active_trades:
                     if available_balance >= 5:
                         side = SIDE_BUY if trade_direction == "BUY" else SIDE_SELL
@@ -1205,66 +1233,7 @@ class TradingBot:
                 else:
                     logger.info(f"Position already exists for {symbol}")
             else:
-                logger.debug(f"No consensus signal for {symbol}. Signals: {signals}")
-
-            # --- INTEGRATE MULTI-TIMEFRAME SIGNAL CONFIRMATION ---
-            # ดึงข้อมูลแต่ละไทม์เฟรม (ลบ 1m, 5m ออก)
-            timeframes = ['15m', '1h', '4h', '1d']
-            tf_signals = {}
-            for tf in timeframes:
-                try:
-                    klines_tf = await self.safe_api_call(
-                        self.client.futures_klines,
-                        symbol=symbol,
-                        interval=tf,
-                        limit=100
-                    )
-                    if not klines_tf:
-                        continue
-                    df_tf = pd.DataFrame(klines_tf, columns=[
-                        'timestamp', 'open', 'high', 'low', 'close', 'volume',
-                        'close_time', 'quote_asset_volume', 'number_of_trades',
-                        'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
-                    ])
-                    df_tf['close'] = pd.to_numeric(df_tf['close'])
-                    df_tf['high'] = pd.to_numeric(df_tf['high'])
-                    df_tf['low'] = pd.to_numeric(df_tf['low'])
-                    df_tf['volume'] = pd.to_numeric(df_tf['volume'])
-                    
-                    # Calculate indicators for this timeframe
-                    df_tf = self.calculate_indicators(df_tf)
-                    
-                    # ใช้ MACD trend signal เป็นตัวอย่าง (คุณสามารถรวม logic อื่นๆ ได้)
-                    signal = self.check_macd_trend_signal(df_tf)
-                    if signal:
-                        tf_signals[tf] = signal.lower()  # 'buy' หรือ 'sell'
-                except Exception as e:
-                    logger.warning(f"Error getting signal for {symbol} {tf}: {e}")
-                    continue
-            
-            # Simple signal confirmation logic
-            confirmed_signal = self.confirm_signal_across_timeframes(tf_signals, min_confirm=2)
-            if confirmed_signal:
-                logger.info(f"[Multi-TF] Confirmed signal for {symbol}: {confirmed_signal.upper()} ({tf_signals})")
-
-                # ต้องให้สัญญาณ TF และ consensus ตรงกัน เพื่อเพิ่มความแม่นยำ
-                if trade_direction and trade_direction != confirmed_signal.upper():
-                    logger.info(f"Signal mismatch (Consensus={trade_direction}, Multi-TF={confirmed_signal.upper()}) → Skip trade")
-                else:
-                    final_side = SIDE_BUY if confirmed_signal == 'buy' else SIDE_SELL
-                    if symbol not in self.active_trades:
-                        if available_balance >= 5:
-                            await self.place_order(symbol, final_side, 0)
-                        else:
-                            logger.warning(f"Insufficient balance for {symbol}: {available_balance} USDT")
-                    else:
-                        logger.info(f"Position already exists for {symbol}")
-            else:
-                logger.info(f"[Multi-TF] No confirmed signal for {symbol} (signals: {tf_signals})")
-            # --- END MULTI-TIMEFRAME SIGNAL CONFIRMATION ---
-
-            # (Optional) คุณสามารถคง logic signals แบบเดิมไว้ หรือคอมเมนต์ออก
-            # ...
+                logger.debug(f"No strong signal for {symbol}. Signals: {signals} | Confidence: {confidence_score:.2f}")
         except Exception as e:
             logger.error(f"Error checking market conditions for {symbol}: {str(e)}")
 
@@ -1895,3 +1864,252 @@ class TradingBot:
         except Exception as e:
             logger.error(f"Error checking position size limit: {e}")
             return False
+
+    def calculate_signal_strength(self, df, signal_type):
+        """
+        Calculate signal strength score (0-100)
+        Higher score = stronger signal
+        """
+        try:
+            strength = 0
+            
+            if signal_type == "BUY":
+                # RSI oversold
+                current_rsi = float(df['rsi'].iloc[-1])
+                if current_rsi < 30:
+                    strength += 20
+                elif current_rsi < 40:
+                    strength += 10
+                
+                # Volume confirmation
+                current_volume = float(df['volume'].iloc[-1])
+                avg_volume = float(df['volume_sma20'].iloc[-1])
+                if current_volume > avg_volume * 2:
+                    strength += 25
+                elif current_volume > avg_volume * 1.5:
+                    strength += 15
+                
+                # MACD momentum
+                current_macd = float(df['macd'].iloc[-1])
+                prev_macd = float(df['macd'].iloc[-2])
+                if current_macd > prev_macd and current_macd > 0:
+                    strength += 20
+                
+                # Price above SMA
+                sma20 = float(df['sma20'].iloc[-1])
+                current_price = float(df['close'].iloc[-1])
+                if current_price > sma20:
+                    strength += 15
+                
+                # Stochastic oversold
+                current_stoch = float(df['stoch_k'].iloc[-1])
+                if current_stoch < 20:
+                    strength += 20
+                    
+            elif signal_type == "SELL":
+                # RSI overbought
+                current_rsi = float(df['rsi'].iloc[-1])
+                if current_rsi > 70:
+                    strength += 20
+                elif current_rsi > 60:
+                    strength += 10
+                
+                # Volume confirmation
+                current_volume = float(df['volume'].iloc[-1])
+                avg_volume = float(df['volume_sma20'].iloc[-1])
+                if current_volume > avg_volume * 2:
+                    strength += 25
+                elif current_volume > avg_volume * 1.5:
+                    strength += 15
+                
+                # MACD momentum
+                current_macd = float(df['macd'].iloc[-1])
+                prev_macd = float(df['macd'].iloc[-2])
+                if current_macd < prev_macd and current_macd < 0:
+                    strength += 20
+                
+                # Price below SMA
+                sma20 = float(df['sma20'].iloc[-1])
+                current_price = float(df['close'].iloc[-1])
+                if current_price < sma20:
+                    strength += 15
+                
+                # Stochastic overbought
+                current_stoch = float(df['stoch_k'].iloc[-1])
+                if current_stoch > 80:
+                    strength += 20
+            
+            return min(strength, 100)  # Cap at 100
+            
+        except Exception as e:
+            logger.warning(f"Error calculating signal strength: {e}")
+            return 0
+
+    def check_volume_profile_signal(self, df):
+        """
+        Volume Profile Analysis - Advanced volume-based signal
+        """
+        try:
+            current_volume = float(df['volume'].iloc[-1])
+            avg_volume = float(df['volume_sma20'].iloc[-1])
+            current_price = float(df['close'].iloc[-1])
+            current_rsi = float(df['rsi'].iloc[-1])
+            
+            # Volume spike detection
+            volume_ratio = current_volume / avg_volume
+            
+            # Price momentum
+            prev_price = float(df['close'].iloc[-2])
+            price_change = (current_price - prev_price) / prev_price * 100
+            
+            # Volume confirmation patterns
+            if volume_ratio > 2.0:  # High volume spike
+                if price_change > 1.0 and current_rsi < 70:
+                    return "BUY"
+                elif price_change < -1.0 and current_rsi > 30:
+                    return "SELL"
+            
+            # Volume divergence
+            if volume_ratio > 1.5:
+                if price_change < 0.5 and current_rsi < 40:
+                    return "BUY"  # Volume up, price down = accumulation
+                elif price_change > 0.5 and current_rsi > 60:
+                    return "SELL"  # Volume up, price up = distribution
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Error in Volume Profile signal: {e}")
+            return None
+
+    def check_market_structure_signal(self, df):
+        """
+        Market Structure Analysis - Support/Resistance levels
+        """
+        try:
+            high = df['high'].astype(float)
+            low = df['low'].astype(float)
+            close = df['close'].astype(float)
+            current_price = float(close.iloc[-1])
+            
+            # Find recent highs and lows
+            recent_highs = high.tail(20).nlargest(3)
+            recent_lows = low.tail(20).nsmallest(3)
+            
+            # Resistance level (average of recent highs)
+            resistance = recent_highs.mean()
+            
+            # Support level (average of recent lows)
+            support = recent_lows.mean()
+            
+            # Distance to levels
+            distance_to_resistance = (resistance - current_price) / current_price * 100
+            distance_to_support = (current_price - support) / current_price * 100
+            
+            # RSI for confirmation
+            current_rsi = float(df['rsi'].iloc[-1])
+            
+            # Breakout/breakdown signals
+            if distance_to_resistance < 1.0 and current_rsi > 60:
+                return "SELL"  # Near resistance, overbought
+            elif distance_to_support < 1.0 and current_rsi < 40:
+                return "BUY"   # Near support, oversold
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Error in Market Structure signal: {e}")
+            return None
+
+    def check_order_flow_signal(self, df):
+        """
+        Order Flow Analysis - Based on price action and volume
+        """
+        try:
+            open_prices = df['open'].astype(float)
+            close_prices = df['close'].astype(float)
+            high_prices = df['high'].astype(float)
+            low_prices = df['low'].astype(float)
+            volumes = df['volume'].astype(float)
+            
+            # Current candle analysis
+            current_open = float(open_prices.iloc[-1])
+            current_close = float(close_prices.iloc[-1])
+            current_high = float(high_prices.iloc[-1])
+            current_low = float(low_prices.iloc[-1])
+            current_volume = float(volumes.iloc[-1])
+            
+            # Previous candle
+            prev_open = float(open_prices.iloc[-2])
+            prev_close = float(close_prices.iloc[-2])
+            prev_volume = float(volumes.iloc[-2])
+            
+            # Candle patterns
+            bullish_candle = current_close > current_open
+            bearish_candle = current_close < current_open
+            
+            # Volume analysis
+            volume_increase = current_volume > prev_volume * 1.2
+            
+            # Body size (strength of move)
+            body_size = abs(current_close - current_open)
+            avg_body = abs(close_prices - open_prices).tail(10).mean()
+            strong_move = body_size > avg_body * 1.5
+            
+            # Order flow signals
+            if bullish_candle and volume_increase and strong_move:
+                return "BUY"
+            elif bearish_candle and volume_increase and strong_move:
+                return "SELL"
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Error in Order Flow signal: {e}")
+            return None
+
+    def get_weighted_signal(self, signals_dict):
+        """
+        Get weighted signal based on signal strength and reliability
+        Returns: (signal, confidence_score)
+        """
+        try:
+            buy_signals = []
+            sell_signals = []
+            
+            # Signal weights (higher = more reliable)
+            signal_weights = {
+                'MACD Trend': 0.15,
+                'Bollinger RSI': 0.12,
+                'Stochastic Williams': 0.10,
+                'Momentum': 0.08,
+                'Fibonacci RSI': 0.06,
+                'Parabolic SAR ADX': 0.14,
+                'Volume Profile': 0.13,
+                'Market Structure': 0.11,
+                'Order Flow': 0.11
+            }
+            
+            for signal_name, signal_value in signals_dict.items():
+                if signal_value == "BUY":
+                    weight = signal_weights.get(signal_name, 0.05)
+                    buy_signals.append(weight)
+                elif signal_value == "SELL":
+                    weight = signal_weights.get(signal_name, 0.05)
+                    sell_signals.append(weight)
+            
+            # Calculate weighted scores
+            buy_score = sum(buy_signals)
+            sell_score = sum(sell_signals)
+            
+            # Determine final signal
+            if buy_score > 0.3 and buy_score > sell_score * 1.5:
+                return ("BUY", buy_score)
+            elif sell_score > 0.3 and sell_score > buy_score * 1.5:
+                return ("SELL", sell_score)
+            
+            return (None, 0)
+            
+        except Exception as e:
+            logger.warning(f"Error in weighted signal calculation: {e}")
+            return (None, 0)

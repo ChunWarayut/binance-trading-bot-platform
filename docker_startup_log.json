@@ -1,0 +1,92 @@
+[
+  {
+    "command": "pkill -9 -f 'python.*main.py'",
+    "description": "Stop main.py",
+    "return_code": -9,
+    "success": false,
+    "stdout": "",
+    "stderr": "",
+    "timestamp": "2025-06-30T18:48:52.881422"
+  },
+  {
+    "command": "pkill -9 -f 'streamlit'",
+    "description": "Stop streamlit",
+    "return_code": -9,
+    "success": false,
+    "stdout": "",
+    "stderr": "",
+    "timestamp": "2025-06-30T18:48:52.898694"
+  },
+  {
+    "command": "pkill -9 -f 'uvicorn'",
+    "description": "Stop uvicorn",
+    "return_code": -9,
+    "success": false,
+    "stdout": "",
+    "stderr": "",
+    "timestamp": "2025-06-30T18:48:52.918688"
+  },
+  {
+    "command": "docker stop crypto-trading-bot",
+    "description": "Stop container",
+    "return_code": 0,
+    "success": true,
+    "stdout": "crypto-trading-bot\n",
+    "stderr": "",
+    "timestamp": "2025-06-30T18:48:52.943323"
+  },
+  {
+    "command": "docker rm crypto-trading-bot",
+    "description": "Remove container",
+    "return_code": 0,
+    "success": true,
+    "stdout": "crypto-trading-bot\n",
+    "stderr": "",
+    "timestamp": "2025-06-30T18:48:52.985576"
+  },
+  {
+    "command": "docker build -t crypto-trading-bot .",
+    "description": "Build image",
+    "return_code": 0,
+    "success": true,
+    "stdout": "Sending build context to Docker daemon  1.864MB\n\nStep 1/6 : FROM python:3.11\n ---> 98b8dc21a9bf\nStep 2/6 : WORKDIR /app\n ---> Using cache\n ---> 898756b85dca\nStep 3/6 : COPY requirements.txt .\n ---> Using cache\n ---> b8082bd37677\nStep 4/6 : RUN pip install --no-cache-dir -r requirements.txt\n ---> Using cache\n ---> a046a14557f1\nStep 5/6 : COPY . .\n ---> 98be5fbea88f\nStep 6/6 : CMD [\"python\", \"main.py\"]\n ---> Running in e05c21ccd415\nRemoving intermediate container e05c21ccd415\n ---> 5820828ead41\nSuccessfully built 5820828ead41\nSuccessfully tagged crypto-trading-bot:latest\n",
+    "stderr": "DEPRECATED: The legacy builder is deprecated and will be removed in a future release.\n            Install the buildx component to build images with BuildKit:\n            https://docs.docker.com/go/buildx/\n\n",
+    "timestamp": "2025-06-30T18:48:53.537309"
+  },
+  {
+    "command": "docker run -d --name crypto-trading-bot --restart unless-stopped         -p 8501:8501 -p 8080:8080         -v $(pwd)/logs:/app/logs -v $(pwd):/app         crypto-trading-bot",
+    "description": "Start container",
+    "return_code": 125,
+    "success": false,
+    "stdout": "31f23fd66c40162d607c24389f6b1dacfcf940231636d959b6494cadda794374\n",
+    "stderr": "docker: Error response from daemon: driver failed programming external connectivity on endpoint crypto-trading-bot (b4926a45f21ccbac7d7bf8908aacc843dcd6014c2e07d16f12449e2603fb087f): Bind for 0.0.0.0:8080 failed: port is already allocated.\n",
+    "timestamp": "2025-06-30T18:48:54.122101"
+  },
+  {
+    "command": "docker ps | grep crypto-trading-bot",
+    "description": "Check container",
+    "return_code": 1,
+    "success": false,
+    "stdout": "",
+    "stderr": "",
+    "timestamp": "2025-06-30T18:49:09.157189"
+  },
+  {
+    "command": "curl -s http://localhost:8080/api/bot_status",
+    "description": "Test API",
+    "return_code": 0,
+    "success": true,
+    "stdout": "{\"running\":true,\"active_trades_count\":1,\"total_pnl\":0,\"last_update\":\"2024-06-25 12:00:00\"}",
+    "stderr": "",
+    "timestamp": "2025-06-30T18:49:09.174937"
+  },
+  {
+    "command": "curl -s http://localhost:8501",
+    "description": "Test Streamlit",
+    "return_code": 7,
+    "success": false,
+    "stdout": "",
+    "stderr": "",
+    "timestamp": "2025-06-30T18:49:09.182565"
+  }
+]
