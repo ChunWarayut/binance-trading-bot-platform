@@ -1193,30 +1193,39 @@ class TradingBot:
                     directions.append("SELL")
 
             # Evaluate indicators
+            # HIGH WIN RATE SIGNALS ONLY (เฉพาะสัญญาณที่แม่นสูง)
+            
+            # Core Technical Analysis (ความแม่นสูง)
             _add_signal(self.check_macd_trend_signal(df), "MACD Trend")
             _add_signal(self.check_bollinger_rsi_signal(df, current_price), "Bollinger RSI")
-            _add_signal(self.check_stochastic_williams_signal(df), "Stochastic Williams")
-            _add_signal(self.check_momentum_signal(df), "Momentum")
-            _add_signal(self.check_fibonacci_rsi_signal(df), "Fibonacci RSI")
             _add_signal(self.check_parabolic_sar_adx_signal(df), "Parabolic SAR ADX")
-            _add_signal(self.check_keltner_cci_signal(df), "Keltner CCI")
-            _add_signal(self.check_pivot_points_rsi_signal(df), "Pivot Points RSI")
-            _add_signal(self.check_money_flow_volume_signal(df), "Money Flow Volume")
-            _add_signal(self.check_atr_moving_average_signal(df), "ATR Moving Average")
-            _add_signal(self.check_rvi_stochastic_signal(df), "RVI Stochastic")
-            _add_signal(self.check_cci_bollinger_signal(df), "CCI Bollinger")
-            _add_signal(self.check_obv_price_action_signal(df), "OBV Price Action")
-            _add_signal(self.check_chaikin_money_flow_macd_signal(df), "Chaikin Money Flow MACD")
-            _add_signal(self.check_roc_moving_average_crossover_signal(df), "ROC MA Crossover")
-            _add_signal(self.check_emergency_signal(df), "Emergency")
-            _add_signal(self.check_strong_trend_signal(df), "Strong Trend")
-            _add_signal(self.check_breakout_signal(df), "Breakout")
-            _add_signal(self.check_momentum_acceleration_signal(df), "Momentum Acceleration")
             
-            # Advanced Strategies
+            # Volume & Momentum (แม่นในการยืนยัน)
             _add_signal(self.check_volume_profile_signal(df), "Volume Profile")
+            _add_signal(self.check_obv_price_action_signal(df), "OBV Price Action")
+            _add_signal(self.check_strong_trend_signal(df), "Strong Trend")
+            
+            # Breakout & Emergency (สำหรับ high-probability entries)
+            _add_signal(self.check_breakout_signal(df), "Breakout")
+            _add_signal(self.check_emergency_signal(df), "Emergency")
+            
+            # Market Structure (Support/Resistance)
             _add_signal(self.check_market_structure_signal(df), "Market Structure")
-            _add_signal(self.check_order_flow_signal(df), "Order Flow")
+            
+            # REMOVED LOW WIN RATE SIGNALS:
+            # - Stochastic Williams (เปลี่ยนแปลงบอย, false signals)
+            # - Momentum (ไม่มี confirmation, whipsaws)
+            # - Fibonacci RSI (ซับซ้อนเกินไป, unreliable)
+            # - Keltner CCI (false signals มาก)
+            # - Pivot Points RSI (ไม่แม่นในตลาด sideways)
+            # - Money Flow Volume (noise มาก)
+            # - ATR Moving Average (ช้าเกินไป, lagging)
+            # - RVI Stochastic (ไม่มี volume confirmation)
+            # - CCI Bollinger (oversensitive, too many signals)
+            # - Chaikin Money Flow MACD (ซับซ้อน, mixed results)
+            # - ROC MA Crossover (false crossovers, unreliable)
+            # - Momentum Acceleration (เปลี่ยนทิศทางเร็ว)
+            # - Order Flow (ใช้ข้อมูลไม่เพียงพอ)
 
             # ส่งข้อมูล technical indicators
             await self.send_technical_indicators(symbol, current_price, current_rsi)
@@ -1236,17 +1245,48 @@ class TradingBot:
 
             buy_count = directions.count("BUY")
             sell_count = directions.count("SELL")
-            consensus_threshold = 3  # require 3 aligned signals
+            total_signals = len(directions)
+            
+            # HIGH WIN RATE CONSENSUS LOGIC
             trade_direction = None
             
-            # Use weighted signal if confidence is high enough (lowered thresholds for better responsiveness)
-            if weighted_signal and confidence_score > 0.25 and signal_strength > 30:
+            # Method 1: Strong Weighted Signal (แม่นสูงสุด)
+            if weighted_signal and confidence_score > 0.35 and signal_strength > 40:
                 trade_direction = weighted_signal
-                logger.info(f"🚀 Using weighted signal for {symbol}: {weighted_signal} (Confidence: {confidence_score:.2f})")
-            elif buy_count >= consensus_threshold and sell_count == 0:
+                logger.info(f"🎯 STRONG Weighted Signal for {symbol}: {weighted_signal} (Confidence: {confidence_score:.2f}, Strength: {signal_strength})")
+            
+            # Method 2: Clear Majority with No Opposition (แม่นสูง)
+            elif buy_count >= 3 and sell_count == 0 and total_signals >= 4:
                 trade_direction = "BUY"
-            elif sell_count >= consensus_threshold and buy_count == 0:
+                logger.info(f"🟢 CLEAR BUY Consensus for {symbol}: {buy_count} BUY, {sell_count} SELL")
+            
+            elif sell_count >= 3 and buy_count == 0 and total_signals >= 4:
                 trade_direction = "SELL"
+                logger.info(f"🔴 CLEAR SELL Consensus for {symbol}: {buy_count} BUY, {sell_count} SELL")
+            
+            # Method 3: Dominant Direction (70%+ agreement)
+            elif total_signals >= 5:
+                buy_percentage = buy_count / total_signals
+                sell_percentage = sell_count / total_signals
+                
+                if buy_percentage >= 0.7 and sell_percentage <= 0.1:
+                    trade_direction = "BUY"  
+                    logger.info(f"🟢 DOMINANT BUY for {symbol}: {buy_percentage:.0%} agreement")
+                    
+                elif sell_percentage >= 0.7 and buy_percentage <= 0.1:
+                    trade_direction = "SELL"
+                    logger.info(f"🔴 DOMINANT SELL for {symbol}: {sell_percentage:.0%} agreement")
+            
+            # REMOVED: Low-confidence mixed signals จะไม่เข้า position
+
+            # MARKET CONDITION FILTER (High Win Rate Check)
+            if trade_direction:
+                is_favorable, reason = self.check_market_conditions_filter(df) 
+                if not is_favorable:
+                    logger.info(f"⚠️ Skipping {symbol} - {reason}")
+                    trade_direction = None  # Cancel the trade
+                else:
+                    logger.info(f"✅ {symbol} - {reason}")
 
             if trade_direction:
                 logger.info(
@@ -2104,25 +2144,27 @@ class TradingBot:
             buy_signals = []
             sell_signals = []
             
-            # Signal weights (higher = more reliable)
+            # HIGH WIN RATE SIGNAL WEIGHTS (เฉพาะสัญญาณแม่นสูง)
             signal_weights = {
-                'MACD Trend': 0.15,
-                'Bollinger RSI': 0.12,
-                'Stochastic Williams': 0.10,
-                'Momentum': 0.08,
-                'Fibonacci RSI': 0.06,
-                'Parabolic SAR ADX': 0.14,
-                'Volume Profile': 0.13,
-                'Market Structure': 0.11,
-                'Order Flow': 0.11,
-                'OBV Price Action': 0.09,
-                'ROC MA Crossover': 0.08,
-                'ATR Moving Average': 0.07,
-                'Chaikin Money Flow MACD': 0.06,
-                'Emergency': 0.20,  # High weight for emergency signals
-                'Strong Trend': 0.16,
-                'Breakout': 0.12,
-                'Momentum Acceleration': 0.10
+                # Core Technical (แม่นยำสูง)
+                'MACD Trend': 0.25,              # เพิ่มน้ำหนัก: momentum + trend 
+                'Bollinger RSI': 0.20,           # เพิ่มน้ำหนัก: volatility + oversold/overbought
+                'Parabolic SAR ADX': 0.18,       # เพิ่มน้ำหนัก: trend confirmation
+                
+                # Volume & Momentum (ยืนยันแนวโน้ม)  
+                'Volume Profile': 0.15,          # volume confirmation
+                'OBV Price Action': 0.12,        # price-volume relationship
+                'Strong Trend': 0.18,            # เพิ่มน้ำหนัก: clear trend direction
+                
+                # High-Probability Entries
+                'Breakout': 0.20,                # เพิ่มน้ำหนัก: breakout confirmation
+                'Emergency': 0.25,               # สูงสุด: emergency signals
+                
+                # Support/Resistance
+                'Market Structure': 0.12,        # key levels
+                
+                # REMOVED SIGNALS จะไม่มีน้ำหนักแล้ว
+                # Total weight = 1.65 (normalized ใน calculation)
             }
             
             for signal_name, signal_value in signals_dict.items():
@@ -2148,3 +2190,75 @@ class TradingBot:
         except Exception as e:
             logger.warning(f"Error in weighted signal calculation: {e}")
             return (None, 0)
+
+    def check_market_conditions_filter(self, df):
+        """
+        Advanced market condition filter for high win rate
+        Returns: (is_favorable, reason)
+        """
+        try:
+            close = df['close'].astype(float)
+            volume = df['volume'].astype(float)
+            current_rsi = float(df['rsi'].iloc[-1])
+            current_adx = float(df['adx'].iloc[-1]) if 'adx' in df.columns else 25
+            
+            # 1. Avoid Choppy/Sideways Markets
+            sma20 = df['sma20'].astype(float)
+            sma50 = df['sma50'].astype(float)
+            
+            # Check if price is stuck between SMAs (sideways)
+            current_price = float(close.iloc[-1])
+            sma20_current = float(sma20.iloc[-1])
+            sma50_current = float(sma50.iloc[-1])
+            
+            # Price should be clearly above or below key SMAs
+            price_vs_sma20 = abs(current_price - sma20_current) / sma20_current * 100
+            price_vs_sma50 = abs(current_price - sma50_current) / sma50_current * 100
+            
+            if price_vs_sma20 < 1.0 and price_vs_sma50 < 1.5:
+                return False, "Price stuck between SMAs - sideways market"
+            
+            # 2. Require Minimum Trend Strength (ADX)
+            if current_adx < 20:
+                return False, f"Weak trend strength (ADX: {current_adx:.1f})"
+            
+            # 3. Avoid Extreme RSI (likely reversal zones)
+            if current_rsi > 80 or current_rsi < 15:
+                return False, f"Extreme RSI zone (RSI: {current_rsi:.1f})"
+            
+            # 4. Volume Confirmation Required
+            current_volume = float(volume.iloc[-1])
+            avg_volume_20 = float(df['volume_sma20'].iloc[-1])
+            volume_ratio = current_volume / avg_volume_20
+            
+            if volume_ratio < 0.8:  # Low volume = unreliable signals
+                return False, f"Low volume (Volume ratio: {volume_ratio:.2f})"
+            
+            # 5. Price Action Quality Check
+            # Look for clean price movements (no excessive whipsaws)
+            recent_highs = df['high'].tail(5).astype(float)
+            recent_lows = df['low'].tail(5).astype(float)
+            
+            # Calculate volatility
+            price_range = (recent_highs.max() - recent_lows.min()) / current_price * 100
+            if price_range > 8:  # Too volatile
+                return False, f"High volatility (Range: {price_range:.1f}%)"
+            
+            # 6. Momentum Consistency Check
+            if 'macd' in df.columns:
+                macd_line = df['macd'].astype(float)
+                macd_current = float(macd_line.iloc[-1])
+                macd_prev = float(macd_line.iloc[-2])
+                macd_trend = "UP" if macd_current > macd_prev else "DOWN"
+                
+                # Check MACD-Price alignment
+                price_trend = "UP" if current_price > float(close.iloc[-2]) else "DOWN"
+                
+                if macd_trend != price_trend:
+                    return False, "MACD-Price divergence detected"
+            
+            return True, "Favorable market conditions"
+            
+        except Exception as e:
+            logger.warning(f"Error in market conditions filter: {e}")
+            return False, "Error in market analysis"
