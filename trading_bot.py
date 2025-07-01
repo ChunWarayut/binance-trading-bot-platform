@@ -37,6 +37,10 @@ class TradingBot:
         self.last_trade_date = None
         self.circuit_breaker_triggered = False
         self.initial_balance = None
+        
+        # Notification Rate Limiting
+        self.last_notification_time = {}  # เก็บเวลาแจ้งเตือนล่าสุดสำหรับแต่ละเหรียญ
+        self.notification_interval = 1800  # ส่งแจ้งเตือน RSI ทุก 30 นาที
 
     def setup_logging(self):
         """Configure Loguru for clear, color-coded console logs and tidy file logs."""
@@ -136,11 +140,13 @@ class TradingBot:
                     current_price = ticker['price']
                     logger.info(f"Current price for {symbol}: {current_price}")
                     
-                    await self.notification.notify(
-                        f"✅ Initialized {symbol}\n"
-                        f"Leverage: {config.LEVERAGE}x\n"
-                        f"Current Price: {current_price}"
-                    )
+                    # ส่งแจ้งเตือนการ initialize แค่เมื่อ bot เริ่มครั้งแรก
+                    if symbol not in self.last_notification_time:
+                        await self.notification.notify(
+                            f"✅ Initialized {symbol}\n"
+                            f"Leverage: {config.LEVERAGE}x\n"
+                            f"Current Price: {current_price}"
+                        )
                 except Exception as price_error:
                     logger.error(f"Failed to get price for {symbol}: {str(price_error)}")
                     await self.notification.notify(
@@ -164,12 +170,37 @@ class TradingBot:
             self.last_heartbeat = current_time
 
     async def send_technical_indicators(self, symbol, current_price, current_rsi):
-        # Send notification with RSI
-        await self.notification.notify(
-            f"📊 RSI Indicator for {symbol}\n"
-            f"Price: {current_price:.2f}\n"
-            f"RSI: {current_rsi:.2f}"
+        # Rate limiting: ส่งแจ้งเตือนเฉพาะเมื่อ:
+        # 1. ยังไม่เคยส่งสำหรับเหรียญนี้ หรือ
+        # 2. เวลาผ่านไปแล้วมากกว่า notification_interval หรือ
+        # 3. RSI เข้าสู่ oversold (<30) หรือ overbought (>70) zones
+        current_time = time.time()
+        last_sent = self.last_notification_time.get(symbol, 0)
+        time_elapsed = current_time - last_sent
+        
+        # เงื่อนไขสำหรับการส่งแจ้งเตือน: ส่งเฉพาะ oversold/overbought หรือเวลาผ่านไปนานแล้ว
+        is_significant_rsi = current_rsi <= 30 or current_rsi >= 70
+        should_notify = (
+            is_significant_rsi or  # RSI oversold/overbought (สำคัญ)
+            (time_elapsed >= self.notification_interval and symbol in self.last_notification_time)  # เวลาผ่านไป 30 นาที (เฉพาะถ้าเคยส่งแล้ว)
         )
+        
+        if should_notify:
+            # เพิ่มสัญลักษณ์เตือนสำหรับ oversold/overbought
+            indicator = ""
+            if current_rsi <= 30:
+                indicator = " 🟢 OVERSOLD"
+            elif current_rsi >= 70:
+                indicator = " 🔴 OVERBOUGHT"
+            
+            await self.notification.notify(
+                f"📊 RSI Indicator for {symbol}{indicator}\n"
+                f"Price: {current_price:.2f}\n"
+                f"RSI: {current_rsi:.2f}"
+            )
+            
+            # อัปเดตเวลาแจ้งเตือนล่าสุด
+            self.last_notification_time[symbol] = current_time
 
     def calculate_indicators(self, df):
         # Calculate SMA with longer periods for smoother signals
@@ -1208,8 +1239,8 @@ class TradingBot:
             consensus_threshold = 3  # require 3 aligned signals
             trade_direction = None
             
-            # Use weighted signal if confidence is high enough
-            if weighted_signal and confidence_score > 0.4 and signal_strength > 50:
+            # Use weighted signal if confidence is high enough (lowered thresholds for better responsiveness)
+            if weighted_signal and confidence_score > 0.25 and signal_strength > 30:
                 trade_direction = weighted_signal
                 logger.info(f"🚀 Using weighted signal for {symbol}: {weighted_signal} (Confidence: {confidence_score:.2f})")
             elif buy_count >= consensus_threshold and sell_count == 0:
@@ -2083,7 +2114,15 @@ class TradingBot:
                 'Parabolic SAR ADX': 0.14,
                 'Volume Profile': 0.13,
                 'Market Structure': 0.11,
-                'Order Flow': 0.11
+                'Order Flow': 0.11,
+                'OBV Price Action': 0.09,
+                'ROC MA Crossover': 0.08,
+                'ATR Moving Average': 0.07,
+                'Chaikin Money Flow MACD': 0.06,
+                'Emergency': 0.20,  # High weight for emergency signals
+                'Strong Trend': 0.16,
+                'Breakout': 0.12,
+                'Momentum Acceleration': 0.10
             }
             
             for signal_name, signal_value in signals_dict.items():
@@ -2098,10 +2137,10 @@ class TradingBot:
             buy_score = sum(buy_signals)
             sell_score = sum(sell_signals)
             
-            # Determine final signal
-            if buy_score > 0.3 and buy_score > sell_score * 1.5:
+            # Determine final signal with lower threshold for better responsiveness
+            if buy_score > 0.2 and buy_score > sell_score * 1.2:
                 return ("BUY", buy_score)
-            elif sell_score > 0.3 and sell_score > buy_score * 1.5:
+            elif sell_score > 0.2 and sell_score > buy_score * 1.2:
                 return ("SELL", sell_score)
             
             return (None, 0)
